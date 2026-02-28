@@ -1,6 +1,9 @@
 import logging
 import os
 import json
+import re
+import subprocess
+import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -40,6 +43,12 @@ class AgendaRequest(BaseModel):
 
 
 class CreateRoomRequest(BaseModel):
+    agenda: dict
+    style: str  # "gentle" | "moderate" | "aggressive"
+
+
+class GoogleMeetRequest(BaseModel):
+    meet_url: str
     agenda: dict
     style: str  # "gentle" | "moderate" | "aggressive"
 
@@ -148,8 +157,6 @@ async def generate_agenda(req: AgendaRequest):
 
 @app.post("/api/room")
 async def create_room(req: CreateRoomRequest):
-    import uuid
-
     room_name = f"meet-{uuid.uuid4().hex[:8]}"
 
     # Store room metadata (agenda + style) in LiveKit room metadata
@@ -183,6 +190,119 @@ async def create_room(req: CreateRoomRequest):
 
     logger.info(f"Created room: {room_name}")
     return {"room_name": room_name}
+
+
+# ── Google Meet Bridge ──────────────────────────────────────────────
+
+# Track active bridge processes: room_name -> {"process": Popen, "status": str}
+_bridge_processes: dict[str, dict] = {}
+
+MEET_URL_PATTERN = re.compile(
+    r"^https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}$"
+)
+
+
+@app.post("/api/google-meet")
+async def join_google_meet(req: GoogleMeetRequest):
+    # Validate Meet URL format
+    if not MEET_URL_PATTERN.match(req.meet_url):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Google Meet URL. Expected format: https://meet.google.com/abc-defg-hij",
+        )
+
+    room_name = f"meet-{uuid.uuid4().hex[:8]}"
+
+    # Store room metadata with Google Meet mode flag
+    room_metadata = json.dumps(
+        {
+            "agenda": req.agenda,
+            "style": req.style,
+            "mode": "google-meet",
+            "meet_url": req.meet_url,
+        }
+    )
+
+    try:
+        lk_api = api.LiveKitAPI(
+            os.environ["LIVEKIT_URL"],
+            os.environ["LIVEKIT_API_KEY"],
+            os.environ["LIVEKIT_API_SECRET"],
+        )
+        await lk_api.room.create_room(
+            api.CreateRoomRequest(name=room_name, metadata=room_metadata)
+        )
+        await lk_api.aclose()
+    except KeyError as e:
+        logger.error(f"Missing env var for room creation: {e}")
+        raise HTTPException(status_code=500, detail=f"Server misconfigured: missing {e}")
+    except Exception as e:
+        logger.exception("Room creation failed")
+        raise HTTPException(status_code=502, detail=f"Failed to create LiveKit room: {e}")
+
+    # Spawn bridge subprocess
+    bridge_script = os.path.join(os.path.dirname(__file__), "..", "bridge", "main.py")
+    try:
+        process = subprocess.Popen(
+            [
+                "python",
+                bridge_script,
+                "--meet-url",
+                req.meet_url,
+                "--room-name",
+                room_name,
+            ],
+            env={**os.environ},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        _bridge_processes[room_name] = {
+            "process": process,
+            "status": "STARTING",
+            "meet_url": req.meet_url,
+        }
+        logger.info(f"Spawned bridge process (PID {process.pid}) for room {room_name}")
+    except Exception as e:
+        logger.exception("Failed to spawn bridge process")
+        raise HTTPException(status_code=500, detail=f"Failed to start bridge: {e}")
+
+    return {"room_name": room_name, "status": "bridge_starting"}
+
+
+@app.get("/api/bridge-status/{room_name}")
+async def get_bridge_status(room_name: str):
+    bridge = _bridge_processes.get(room_name)
+    if not bridge:
+        raise HTTPException(status_code=404, detail="No bridge found for this room")
+
+    process = bridge["process"]
+    if process.poll() is not None:
+        return {
+            "status": "DISCONNECTED",
+            "exit_code": process.returncode,
+            "meet_url": bridge.get("meet_url"),
+        }
+
+    return {
+        "status": bridge.get("status", "UNKNOWN"),
+        "pid": process.pid,
+        "meet_url": bridge.get("meet_url"),
+    }
+
+
+@app.post("/api/bridge-stop/{room_name}")
+async def stop_bridge(room_name: str):
+    bridge = _bridge_processes.get(room_name)
+    if not bridge:
+        raise HTTPException(status_code=404, detail="No bridge found for this room")
+
+    process = bridge["process"]
+    if process.poll() is None:
+        process.terminate()
+        logger.info(f"Terminated bridge process (PID {process.pid}) for room {room_name}")
+
+    del _bridge_processes[room_name]
+    return {"status": "stopped"}
 
 
 # ── Health Check ─────────────────────────────────────────────────────
