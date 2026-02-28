@@ -7,3 +7,92 @@ body {
   background: #0a0a0a;
   color: #ededed;
 }
+
+/* LiveKit dark theme overrides */
+[data-lk-theme="default"] {
+  --lk-bg: #0a0a0a;
+  --lk-bg-secondary: #1a1a1a;
+  --lk-bg-tertiary: #111111;
+  --lk-fg: #ededed;
+  --lk-fg-secondary: #cccccc;
+  --lk-fg-tertiary: #999999;
+  --lk-control-bg: #1a1a1a;
+  --lk-control-fg: #ededed;
+  --lk-accent-bg: #3b82f6;
+  --lk-accent-fg: #ffffff;
+}
+
+/* Bot tile avatar styling */
+.bot-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+}
+
+.bot-tile[data-lk-speaking="true"] {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.7);
+  animation: pulse-ring 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.3);
+  }
+}
+
+/* Human tile placeholder (camera off) */
+.human-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: #1a1a1a;
+  font-size: 2.5rem;
+  font-weight: 600;
+  color: #666;
+}
+
+/* Floating agenda panel */
+.floating-agenda-panel {
+  position: absolute;
+  z-index: 30;
+  width: 320px;
+  max-height: 80vh;
+  overflow-y: auto;
+  border-radius: 0.75rem;
+  border: 1px solid #333;
+  background: rgba(10, 10, 10, 0.92);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.floating-agenda-panel .drag-handle {
+  cursor: grab;
+  user-select: none;
+}
+
+.floating-agenda-panel .drag-handle:active {
+  cursor: grabbing;
+}
+
+/* PreJoin dark styling */
+[data-lk-theme="default"] .lk-prejoin {
+  background: #0a0a0a;
+}
+
+/* Control bar styling */
+.custom-control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: #1a1a1a;
+  border-top: 1px solid #333;
+}

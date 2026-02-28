@@ -60,6 +60,9 @@ async def generate_token(req: TokenRequest):
             api.VideoGrants(
                 room_join=True,
                 room=req.room_name,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
             )
         )
         return {"token": token.to_jwt()}
