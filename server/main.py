@@ -1,6 +1,8 @@
 import logging
 import os
 import json
+import secrets
+import string
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +37,7 @@ mistral_client = Mistral(api_key=os.environ.get("MISTRAL_API_KEY", ""))
 class TokenRequest(BaseModel):
     room_name: str
     participant_name: str
+    access_code: str
 
 
 class AgendaRequest(BaseModel):
@@ -53,6 +56,24 @@ class CreateRoomRequest(BaseModel):
 @app.post("/api/token")
 async def generate_token(req: TokenRequest):
     try:
+        # Validate access code against room metadata
+        lk_api = api.LiveKitAPI(
+            os.environ["LIVEKIT_URL"],
+            os.environ["LIVEKIT_API_KEY"],
+            os.environ["LIVEKIT_API_SECRET"],
+        )
+        try:
+            rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[req.room_name]))
+            if not rooms.rooms:
+                raise HTTPException(status_code=404, detail="Room not found or has ended")
+            room_metadata = json.loads(rooms.rooms[0].metadata or "{}")
+            stored_code = room_metadata.get("access_code", "")
+            if stored_code.upper() != req.access_code.upper():
+                logger.warning(f"Invalid access code attempt for room: {req.room_name}")
+                raise HTTPException(status_code=403, detail="Invalid access code")
+        finally:
+            await lk_api.aclose()
+
         token = api.AccessToken(
             os.environ["LIVEKIT_API_KEY"],
             os.environ["LIVEKIT_API_SECRET"],
@@ -69,6 +90,8 @@ async def generate_token(req: TokenRequest):
             )
         )
         return {"token": token.to_jwt()}
+    except HTTPException:
+        raise
     except KeyError as e:
         logger.error(f"Missing env var for token generation: {e}")
         raise HTTPException(status_code=500, detail=f"Server misconfigured: missing {e}")
@@ -149,17 +172,25 @@ async def generate_agenda(req: AgendaRequest):
 # ── Room Creation ────────────────────────────────────────────────────
 
 
+def generate_access_code() -> str:
+    chars = string.ascii_uppercase + string.digits
+    code = "".join(secrets.choice(chars) for _ in range(4))
+    return f"MEET-{code}"
+
+
 @app.post("/api/room")
 async def create_room(req: CreateRoomRequest):
     import uuid
 
     room_name = f"meet-{uuid.uuid4().hex[:8]}"
+    access_code = generate_access_code()
 
-    # Store room metadata (agenda + style) in LiveKit room metadata
+    # Store room metadata (agenda + style + access code) in LiveKit room metadata
     room_metadata = json.dumps(
         {
             "agenda": req.agenda,
             "style": req.style,
+            "access_code": access_code,
         }
     )
 
@@ -185,8 +216,8 @@ async def create_room(req: CreateRoomRequest):
         logger.exception("Room creation failed")
         raise HTTPException(status_code=502, detail=f"Failed to create LiveKit room: {e}")
 
-    logger.info(f"Created room: {room_name}")
-    return {"room_name": room_name}
+    logger.info(f"Created room: {room_name} with access code: {access_code}")
+    return {"room_name": room_name, "access_code": access_code}
 
 
 # ── Health Check ─────────────────────────────────────────────────────

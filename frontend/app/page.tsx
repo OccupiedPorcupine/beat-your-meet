@@ -22,6 +22,9 @@ interface Agenda {
 
 export default function Home() {
   const router = useRouter();
+  const [mode, setMode] = useState<"create" | "join">("create");
+
+  // Create meeting state
   const [description, setDescription] = useState("");
   const [duration, setDuration] = useState(30);
   const [agenda, setAgenda] = useState<Agenda | null>(null);
@@ -31,6 +34,15 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [createdRoom, setCreatedRoom] = useState<{
+    roomName: string;
+    accessCode: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Join meeting state
+  const [joinRoomName, setJoinRoomName] = useState("");
+  const [joinAccessCode, setJoinAccessCode] = useState("");
 
   const generateAgenda = async () => {
     if (!description.trim()) return;
@@ -74,7 +86,7 @@ export default function Home() {
         throw new Error(body?.detail ?? `Server error ${res.status}`);
       }
       const data = await res.json();
-      router.push(`/room/${data.room_name}`);
+      setCreatedRoom({ roomName: data.room_name, accessCode: data.access_code });
     } catch (err) {
       console.error("Room creation failed:", err);
       setError(err instanceof Error ? err.message : "Failed to create meeting room");
@@ -82,6 +94,76 @@ export default function Home() {
       setCreating(false);
     }
   };
+
+  const joinMeeting = () => {
+    const room = joinRoomName.trim();
+    const code = joinAccessCode.trim().toUpperCase();
+    if (!room || !code) return;
+    router.push(`/room/${room}?code=${code}`);
+  };
+
+  // Share screen after room creation
+  if (createdRoom) {
+    const shareUrl = `${window.location.origin}/room/${createdRoom.roomName}?code=${createdRoom.accessCode}`;
+
+    const copyLink = async () => {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    };
+
+    return (
+      <main className="max-w-2xl mx-auto px-4 py-12">
+        <div className="text-center mb-10">
+          <h1 className="text-4xl font-bold mb-2">Meeting Created!</h1>
+          <p className="text-gray-400 text-lg">
+            Share this link with participants to join
+          </p>
+        </div>
+
+        <div className="space-y-6">
+          <div className="p-4 bg-gray-900 border border-gray-700 rounded-lg">
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              Shareable Link
+            </label>
+            <div className="flex gap-2">
+              <input
+                readOnly
+                value={shareUrl}
+                className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm font-mono truncate"
+              />
+              <button
+                onClick={copyLink}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap"
+              >
+                {copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+          </div>
+
+          <div className="p-4 bg-gray-900 border border-gray-700 rounded-lg text-center">
+            <label className="block text-sm font-medium text-gray-400 mb-1">
+              Access Code
+            </label>
+            <span className="text-2xl font-bold font-mono tracking-widest">
+              {createdRoom.accessCode}
+            </span>
+          </div>
+
+          <button
+            onClick={() =>
+              router.push(
+                `/room/${createdRoom.roomName}?code=${createdRoom.accessCode}`
+              )
+            }
+            className="w-full py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors"
+          >
+            Join Meeting
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="max-w-2xl mx-auto px-4 py-12">
@@ -92,13 +174,73 @@ export default function Home() {
         </p>
       </div>
 
+      {/* Mode toggle */}
+      <div className="flex mb-8 bg-gray-900 rounded-lg p-1 border border-gray-700">
+        <button
+          onClick={() => { setMode("create"); setError(null); }}
+          className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+            mode === "create"
+              ? "bg-blue-600 text-white"
+              : "text-gray-400 hover:text-white"
+          }`}
+        >
+          Create Meeting
+        </button>
+        <button
+          onClick={() => { setMode("join"); setError(null); }}
+          className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+            mode === "join"
+              ? "bg-blue-600 text-white"
+              : "text-gray-400 hover:text-white"
+          }`}
+        >
+          Join Meeting
+        </button>
+      </div>
+
       {error && (
         <div className="mb-6 p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-400 text-sm">
           <span className="font-medium">Error: </span>{error}
         </div>
       )}
 
-      {!agenda ? (
+      {mode === "join" ? (
+        <div className="space-y-6">
+          <div>
+            <label className="block text-sm font-medium mb-2">
+              Room Name
+            </label>
+            <input
+              type="text"
+              value={joinRoomName}
+              onChange={(e) => setJoinRoomName(e.target.value)}
+              placeholder="e.g. meet-a1b2c3d4"
+              className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">
+              Access Code
+            </label>
+            <input
+              type="text"
+              value={joinAccessCode}
+              onChange={(e) => setJoinAccessCode(e.target.value)}
+              placeholder="e.g. MEET-7X3K"
+              className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white font-mono tracking-widest placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <button
+            onClick={joinMeeting}
+            disabled={!joinRoomName.trim() || !joinAccessCode.trim()}
+            className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-lg transition-colors"
+          >
+            Join Meeting
+          </button>
+        </div>
+      ) : !agenda ? (
         <div className="space-y-6">
           <div>
             <label className="block text-sm font-medium mb-2">
