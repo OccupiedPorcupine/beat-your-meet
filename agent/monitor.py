@@ -164,6 +164,18 @@ class MeetingState:
             return False
         return (time.time() - self.last_intervention_time) > self.INTERVENTION_COOLDOWN
 
+    def can_intervene_for_tangent(self) -> bool:
+        """Check if enough time has passed since last intervention, using style-specific tolerance.
+
+        gentle=60s, moderate=30s, aggressive=10s. The tolerance is the minimum
+        number of seconds that must have elapsed since the last intervention before
+        the bot will speak up about a tangent.
+        """
+        if self.is_in_override_grace():
+            return False
+        tolerance = self.TANGENT_TOLERANCE.get(self.style, self.INTERVENTION_COOLDOWN)
+        return (time.time() - self.last_intervention_time) > tolerance
+
     def record_intervention(self):
         """Record that the bot just spoke."""
         self.last_intervention_time = time.time()

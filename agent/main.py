@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -28,7 +29,9 @@ from prompts import (
     TIME_WARNING_TEMPLATE,
 )
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+# Resolve absolute path to .env so it works regardless of CWD or how Python
+# was invoked (e.g. `python main.py` vs running from the project root).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 logger = logging.getLogger("beat-your-meet")
 logger.setLevel(logging.INFO)
@@ -107,7 +110,10 @@ async def entrypoint(ctx: JobContext):
         def on_speech(event):
             if not event.is_final:
                 return
-            speaker = participant.identity
+            # Best-effort speaker identification: if exactly one remote participant
+            # is present use their identity; otherwise fall back to the first joiner.
+            remote = list(ctx.room.remote_participants.values())
+            speaker = remote[0].identity if len(remote) == 1 else participant.identity
             meeting_state.add_transcript(speaker, event.transcript)
             logger.info(f"[{speaker}] {event.transcript}")
 
@@ -131,9 +137,15 @@ async def entrypoint(ctx: JobContext):
         # Send initial agenda state to frontend via data channel
         await _send_agenda_state(ctx.room, meeting_state)
 
-        # Start the monitoring loop
+        # Start the monitoring loop — store reference to prevent garbage collection
         logger.info("Starting monitoring loop...")
-        asyncio.create_task(_monitoring_loop(session, ctx, meeting_state))
+        _monitor_task = asyncio.create_task(_monitoring_loop(session, ctx, meeting_state))
+
+        def _on_monitor_done(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception() is not None:
+                logger.error("Monitoring loop exited with an error", exc_info=t.exception())
+
+        _monitor_task.add_done_callback(_on_monitor_done)
 
         logger.info("Beat Your Meet agent started successfully")
 
@@ -206,9 +218,10 @@ async def _monitoring_loop(
                 await _send_agenda_state(ctx.room, state)
                 continue
 
-            # Check for tangent detection (only if we have transcript and can intervene)
+            # Check for tangent detection — use style-specific tolerance so gentle/aggressive
+            # styles actually behave differently (bug: TANGENT_TOLERANCE was defined but unused)
             transcript = state.get_recent_transcript(seconds=60)
-            if transcript and state.can_intervene() and not state.is_in_override_grace():
+            if transcript and state.can_intervene_for_tangent():
                 assessment = await _check_tangent(
                     mistral_client, state, transcript
                 )
