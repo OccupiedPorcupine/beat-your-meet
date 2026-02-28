@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+livekit-api>=0.6
+mistralai
+python-dotenv

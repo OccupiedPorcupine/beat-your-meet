@@ -1,10 +1,10 @@
 ---
-title: "feat: AI Meeting Facilitator Bot (Beat Your Meet)"
+
+## title: "feat: AI Meeting Facilitator Bot (Beat Your Meet)"
 type: feat
 date: 2026-02-28
 context: Mistral Worldwide Hackathon, Singapore (Mar 1-2, 2026) — API Track
 team: Hackiedonz
----
 
 # AI Meeting Facilitator Bot — "Beat Your Meet"
 
@@ -42,14 +42,16 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
 
 ### AI Stack
 
-| Component | Technology | Rationale |
-|-----------|-----------|-----------|
-| Meeting intelligence | **Mistral Large** (`mistral-large-latest`) | Core reasoning — agenda generation, tangent detection, Q&A. $2/M input tokens, 128k context |
-| Tangent monitoring | **Mistral Small** (`mistral-small-latest`) | Fast, cheap periodic checks. $0.2/M input tokens |
-| Speech-to-text | **Deepgram** (Nova-2, via `livekit-plugins-deepgram`) | Streaming with interim results, ~300-500ms latency, existing LiveKit plugin, $200 free credits |
-| Text-to-speech | **ElevenLabs** (`eleven_turbo_v2_5`, via `livekit-plugins-elevenlabs`) | Natural voice, lowest latency model, targets ElevenLabs prize |
-| Voice activity detection | **Silero VAD** (via `livekit-plugins-silero`) | Local, fast, no API cost |
-| WebRTC infrastructure | **LiveKit Cloud** (free tier) | Handles rooms, audio routing, participant management |
+
+| Component                | Technology                                                             | Rationale                                                                                      |
+| ------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Meeting intelligence     | **Mistral Large** (`mistral-large-latest`)                             | Core reasoning — agenda generation, tangent detection, Q&A. $2/M input tokens, 128k context    |
+| Tangent monitoring       | **Mistral Small** (`mistral-small-latest`)                             | Fast, cheap periodic checks. $0.2/M input tokens                                               |
+| Speech-to-text           | **Deepgram** (Nova-2, via `livekit-plugins-deepgram`)                  | Streaming with interim results, ~300-500ms latency, existing LiveKit plugin, $200 free credits |
+| Text-to-speech           | **ElevenLabs** (`eleven_turbo_v2_5`, via `livekit-plugins-elevenlabs`) | Natural voice, lowest latency model, targets ElevenLabs prize                                  |
+| Voice activity detection | **Silero VAD** (via `livekit-plugins-silero`)                          | Local, fast, no API cost                                                                       |
+| WebRTC infrastructure    | **LiveKit Cloud** (free tier)                                          | Handles rooms, audio routing, participant management                                           |
+
 
 ### Key Architectural Decisions
 
@@ -62,15 +64,17 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
 
 ### Latency Budget (Target: < 3s to first audio)
 
-| Stage | Expected Latency |
-|-------|-----------------|
-| VAD detection | ~200ms |
-| Deepgram STT (streaming) | ~300-500ms |
-| Mistral API TTFT | ~200-400ms |
-| First sentence generation | ~150-300ms |
-| ElevenLabs TTS first chunk | ~300-500ms |
-| WebRTC delivery | ~50-100ms |
-| **Total** | **~1.2-2.0s** |
+
+| Stage                      | Expected Latency |
+| -------------------------- | ---------------- |
+| VAD detection              | ~200ms           |
+| Deepgram STT (streaming)   | ~300-500ms       |
+| Mistral API TTFT           | ~200-400ms       |
+| First sentence generation  | ~150-300ms       |
+| ElevenLabs TTS first chunk | ~300-500ms       |
+| WebRTC delivery            | ~50-100ms        |
+| **Total**                  | **~1.2-2.0s**    |
+
 
 ### Agenda Item State Machine
 
@@ -82,11 +86,15 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
                 ┌────▼─────┐
           ┌─────│  ACTIVE  │─────┐
           │     └────┬─────┘     │
-     (80% time)  (100% time)  (host override)
+     (80% time)  (100% time)  (host says "next")
           │          │           │
     ┌─────▼───┐ ┌───▼────┐     │
     │ WARNING │ │OVERTIME│     │
     └─────┬───┘ └───┬────┘     │
+          │     ┌───▼────┐     │
+          │     │EXTENDED│     │  (host says "keep going" — suppresses
+          │     │(override)    │   bot for 2 min, then resumes warnings)
+          │     └───┬────┘     │
           │          │           │
           └──────────┴───────────┘
                      │
@@ -95,13 +103,25 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
                └───────────┘
 ```
 
+### Time Override Behavior
+
+When a host overrides a time warning, the meeting simply gets longer — no time is stolen from other items.
+
+- Each agenda item keeps its **original allocated time** regardless of overruns elsewhere
+- The agent tracks `meeting_overtime` as a running total of extra time used across all items
+- The bot can reference this naturally: *"We're 3 minutes over schedule overall. 2 items left."*
+- After a host override, the bot suppresses interventions for 2 minutes, then resumes monitoring
+- The frontend timer reflects actual elapsed time, not the original schedule
+
 ### Bot Personality Modes
 
-| Mode | Tangent tolerance | Tone | Example |
-|------|------------------|------|---------|
-| **Gentle** | 60s off-topic | Warm, suggestive | "Just a gentle nudge — we've got 5 minutes left for Q1 roadmap." |
-| **Moderate** | 30s off-topic | Friendly but firm | "Hey team, let's circle back — we're running behind." |
-| **Aggressive** | 10s off-topic | Direct, action-oriented | "We're off-topic. Back to the roadmap." |
+
+| Mode           | Tangent tolerance | Tone                    | Example                                                          |
+| -------------- | ----------------- | ----------------------- | ---------------------------------------------------------------- |
+| **Gentle**     | 60s off-topic     | Warm, suggestive        | "Just a gentle nudge — we've got 5 minutes left for Q1 roadmap." |
+| **Moderate**   | 30s off-topic     | Friendly but firm       | "Hey team, let's circle back — we're running behind."            |
+| **Aggressive** | 10s off-topic     | Direct, action-oriented | "We're off-topic. Back to the roadmap."                          |
+
 
 ## Implementation Phases
 
@@ -109,21 +129,21 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
 
 **Goal:** Skeleton app with all services connected.
 
-- [ ] Set up project structure: Next.js frontend + Python backend + LiveKit agent
+- Set up project structure: Next.js frontend + Python backend + LiveKit agent
   - `frontend/` — Next.js app
   - `agent/` — Python LiveKit agent
   - `server/` — FastAPI server for token gen + agenda API
-- [ ] Configure all external service accounts and verify API keys work
+- Configure all external service accounts and verify API keys work
   - LiveKit Cloud project → `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
   - Deepgram API key
   - ElevenLabs API key
   - Mistral API key (hackathon $15 credits, Scale Plan)
-- [ ] Implement token generation endpoint (`server/main.py`)
+- Implement token generation endpoint (`server/main.py`)
   - `POST /api/token` — takes `room_name` + `participant_name`, returns JWT
-- [ ] Implement basic LiveKit room page (`frontend/app/room/[id]/page.tsx`)
+- Implement basic LiveKit room page (`frontend/app/room/[id]/page.tsx`)
   - `LiveKitRoom` + `RoomAudioRenderer` + participant list + mute toggle
   - Audio-only, no video
-- [ ] Implement minimal agent that joins room and can speak (`agent/main.py`)
+- Implement minimal agent that joins room and can speak (`agent/main.py`)
   - `VoicePipelineAgent` with Silero VAD + Deepgram STT + ElevenLabs TTS
   - Use `livekit-plugins-openai` LLM with Mistral base_url for OpenAI-compatible interface
   - Verify: agent joins room, transcribes audio, can call `agent.say("Hello")`
@@ -134,27 +154,29 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
 
 **Goal:** Agenda generation + monitoring + barge-in loop.
 
-- [ ] Build onboarding page (`frontend/app/page.tsx`)
+- Build onboarding page (`frontend/app/page.tsx`)
   - Text input for meeting description + total duration
   - Display generated agenda with editable time boxes
   - Bot style selector (gentle / moderate / aggressive)
   - "Create Meeting" button → calls server → creates room → redirects to room page
-- [ ] Implement agenda generation endpoint (`server/main.py`)
+- Implement agenda generation endpoint (`server/main.py`)
   - `POST /api/agenda` — takes meeting description + duration, returns structured JSON agenda via Mistral Large
   - Use `response_format={"type": "json_object"}` for reliable parsing
-- [ ] Implement monitoring loop in agent (`agent/main.py`)
+- Implement monitoring loop in agent (`agent/main.py`)
   - Sliding window transcript buffer (last 60s of raw text + periodic summary of older content)
   - Every 15-30s: send transcript window + current agenda item to Mistral Small with function calling
   - Function tool: `assess_conversation(status, should_speak, spoken_response)`
   - `tool_choice="any"` to force structured assessment
-- [ ] Implement barge-in via `agent.say()`
+- Implement barge-in via `agent.say()`
   - When `should_speak=True`: generate spoken response via Mistral Large (streaming)
   - Pipe streamed text → ElevenLabs TTS → room audio
   - Cooldown: minimum 30s between interventions to avoid annoying participants
-- [ ] Implement agenda state tracking
-  - Track `current_item_index`, `item_start_time`, `elapsed_minutes`
+- Implement agenda state tracking
+  - Track `current_item_index`, `item_start_time`, `elapsed_minutes`, `meeting_overtime`
   - Auto-advance with bot announcement when time box expires
-  - Inject current state into every Mistral monitoring call
+  - Host override detection: "keep going" / "stay on this" → suppress bot for 2 min, add overrun to `meeting_overtime`
+  - Each item keeps its original allocation — overruns push the meeting end time back, not shrink other items
+  - Inject current state (including total overtime) into every Mistral monitoring call
 
 **Deliverable:** A meeting where the bot monitors conversation and barges in when off-topic or over time.
 
@@ -162,17 +184,17 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
 
 **Goal:** Direct Q&A, intro message, agenda UI.
 
-- [ ] Implement bot introduction
+- Implement bot introduction
   - When first participant joins: bot says "Hi everyone, I'm Beat, your meeting facilitator. Today's agenda has N items. Let's start with [first item]."
-- [ ] Implement participant Q&A
+- Implement participant Q&A
   - Detect "hey bot" or "bot," in transcript → classify as direct address
   - Generate response via Mistral Large with full meeting context
   - Common queries: "how much time left?", "summarize so far", "what's next?"
-- [ ] Add live agenda display to room page
+- Add live agenda display to room page
   - Show agenda items with time allocations
   - Highlight current item with countdown timer
   - Use LiveKit data channel to sync agenda state from agent → frontend
-- [ ] Tune Mistral prompts based on testing
+- Tune Mistral prompts based on testing
   - False positive tangent detection → adjust prompt
   - Response tone → adjust per personality mode
   - Response length → keep to 1-2 sentences max
@@ -183,43 +205,45 @@ A standalone web meeting room (not a Zoom/Meet plugin) with an AI bot participan
 
 **Goal:** Rehearsed demo that reliably triggers the "wow" moment.
 
-- [ ] Write a demo script with planned tangent that triggers bot intervention
-- [ ] Pre-test on demo machine/browser (Chrome recommended)
-- [ ] Record a backup video of the demo in case of live failure
-- [ ] Prepare 2-minute pitch: problem → solution → demo → tech stack → prizes targeted
+- Write a demo script with planned tangent that triggers bot intervention
+- Pre-test on demo machine/browser (Chrome recommended)
+- Record a backup video of the demo in case of live failure
+- Prepare 2-minute pitch: problem → solution → demo → tech stack → prizes targeted
 
 ## Acceptance Criteria
 
 ### Functional Requirements
 
-- [ ] Host can describe a meeting and get a structured agenda with time allocations
-- [ ] Host can adjust agenda items and time boxes before starting
-- [ ] Host can select bot personality (gentle / moderate / aggressive)
-- [ ] Shareable room URL lets participants join with browser mic
-- [ ] Bot introduces itself when the meeting starts
-- [ ] Bot transcribes all participants in real-time
-- [ ] Bot detects off-topic conversation and barges in with voice redirect
-- [ ] Bot warns when agenda item time is running out
-- [ ] Bot auto-advances to next agenda item when time expires
-- [ ] Participants can ask the bot questions by saying "Hey Bot"
+- Host can describe a meeting and get a structured agenda with time allocations
+- Host can adjust agenda items and time boxes before starting
+- Host can select bot personality (gentle / moderate / aggressive)
+- Shareable room URL lets participants join with browser mic
+- Bot introduces itself when the meeting starts
+- Bot transcribes all participants in real-time
+- Bot detects off-topic conversation and barges in with voice redirect
+- Bot warns when agenda item time is running out
+- Bot auto-advances to next agenda item when time expires
+- Participants can ask the bot questions by saying "Hey Bot"
 
 ### Non-Functional Requirements
 
-- [ ] Barge-in latency < 3 seconds from detection to first audio
-- [ ] Bot responses are 1-2 sentences max (no monologuing)
-- [ ] Total Mistral API cost per demo run < $1
-- [ ] Works in Chrome on the demo machine
+- Barge-in latency < 3 seconds from detection to first audio
+- Bot responses are 1-2 sentences max (no monologuing)
+- Total Mistral API cost per demo run < $1
+- Works in Chrome on the demo machine
 
 ## Dependencies & Risks
 
 ### External Service Dependencies
 
-| Service | Risk | Mitigation |
-|---------|------|------------|
-| LiveKit Cloud | Free tier limits | Verify before hackathon; 5-participant room should be fine |
-| Mistral API | Rate limits / credit exhaustion | Scale Plan for higher limits; $15 credits = ~2.5M output tokens |
-| Deepgram | API latency / downtime | $200 free credits buffer; Nova-2 is stable |
-| ElevenLabs | Character limit (10k/mo free) | Keep responses short; upgrade to $5 Starter plan if needed |
+
+| Service       | Risk                            | Mitigation                                                      |
+| ------------- | ------------------------------- | --------------------------------------------------------------- |
+| LiveKit Cloud | Free tier limits                | Verify before hackathon; 5-participant room should be fine      |
+| Mistral API   | Rate limits / credit exhaustion | Scale Plan for higher limits; $15 credits = ~2.5M output tokens |
+| Deepgram      | API latency / downtime          | $200 free credits buffer; Nova-2 is stable                      |
+| ElevenLabs    | Character limit (10k/mo free)   | Keep responses short; upgrade to $5 Starter plan if needed      |
+
 
 ### Technical Risks
 
@@ -306,13 +330,13 @@ python-dotenv
 
 ## Pre-Hackathon Checklist (Do Before Saturday)
 
-- [ ] Create LiveKit Cloud account + project → get URL, API key, API secret
-- [ ] Create Deepgram account → get API key (free $200 credits)
-- [ ] Create ElevenLabs account → get API key, pick a voice
-- [ ] Claim Mistral API coupon ($15 credits) → ensure Scale Plan is active
-- [ ] Install Python dependencies locally and verify imports work
-- [ ] Run LiveKit Agents minimal example to verify agent can join a room
-- [ ] Install Next.js + LiveKit React components and verify basic room UI
+- Create LiveKit Cloud account + project → get URL, API key, API secret
+- Create Deepgram account → get API key (free $200 credits)
+- Create ElevenLabs account → get API key, pick a voice
+- Claim Mistral API coupon ($15 credits) → ensure Scale Plan is active
+- Install Python dependencies locally and verify imports work
+- Run LiveKit Agents minimal example to verify agent can join a room
+- Install Next.js + LiveKit React components and verify basic room UI
 
 ## References & Research
 
@@ -328,6 +352,7 @@ python-dotenv
 ### Critical API Patterns
 
 **Mistral — Agenda Generation:**
+
 ```python
 client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
 response = await client.chat.complete_async(
@@ -340,6 +365,7 @@ response = await client.chat.complete_async(
 ```
 
 **Mistral — Tangent Detection (function calling):**
+
 ```python
 response = await client.chat.complete_async(
     model="mistral-small-latest",
@@ -352,12 +378,14 @@ response = await client.chat.complete_async(
 ```
 
 **LiveKit Agent — Barge-in:**
+
 ```python
 # VoicePipelineAgent has agent.say() for proactive speech
 await agent.say("Hey team, we're off-topic. Let's get back to the roadmap.")
 ```
 
 **LiveKit — Mistral as OpenAI-compatible LLM:**
+
 ```python
 from livekit.plugins.openai import LLM
 mistral_llm = LLM(
@@ -370,3 +398,4 @@ mistral_llm = LLM(
 ### Brainstorm Source
 
 - [2026-02-28-meeting-bot-brainstorm.md](docs/brainstorms/2026-02-28-meeting-bot-brainstorm.md)
+
