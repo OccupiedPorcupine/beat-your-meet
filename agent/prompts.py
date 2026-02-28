@@ -36,6 +36,9 @@ Remaining items: {remaining_items}
 Total meeting overtime so far: {meeting_overtime:.1f} minutes
 Bot style: {style}
 
+## Meeting Memory (completed items)
+{meeting_memory}
+
 ## Intervention Rules
 
 ### When to intervene:
@@ -110,6 +113,46 @@ ASSESS_CONVERSATION_TOOL = {
         },
     },
 }
+
+ITEM_SUMMARY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "record_item_summary",
+        "description": "Record a structured summary of a completed agenda item",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key_points": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Main points discussed (max 4, one sentence each)",
+                },
+                "decisions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Decisions made or agreed upon",
+                },
+                "action_items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific tasks assigned or committed to, with owner if mentioned",
+                },
+            },
+            "required": ["key_points", "decisions", "action_items"],
+        },
+    },
+}
+
+ITEM_SUMMARY_PROMPT = """Summarise the following transcript of a completed meeting agenda item.
+
+Agenda item: {topic}
+Description: {description}
+
+Transcript:
+{transcript}
+
+Use the record_item_summary tool to output a structured summary. Be concise — one sentence per bullet.
+"""
 
 BOT_INTRO_TEMPLATE = (
     "Hi everyone, I'm Beat, your meeting facilitator. "

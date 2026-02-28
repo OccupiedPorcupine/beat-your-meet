@@ -16,6 +16,15 @@ class ItemState(Enum):
 
 
 @dataclass
+class ItemNotes:
+    item_id: int
+    topic: str
+    key_points: list[str] = field(default_factory=list)
+    decisions: list[str] = field(default_factory=list)
+    action_items: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AgendaItem:
     id: int
     topic: str
@@ -36,8 +45,11 @@ class MeetingState:
     meeting_overtime: float = 0.0
     last_intervention_time: float = 0.0
     last_override_time: float = 0.0
+    silence_requested_until: float = 0.0
     override_grace_seconds: float = 120.0
     transcript_buffer: list[dict] = field(default_factory=list)
+    item_transcripts: dict[int, list[dict]] = field(default_factory=dict)
+    meeting_notes: list[ItemNotes] = field(default_factory=list)
 
     # Tangent tolerance per style (seconds)
     TANGENT_TOLERANCE = {
@@ -158,6 +170,29 @@ class MeetingState:
             return False
         return (time.time() - self.last_override_time) < self.override_grace_seconds
 
+    def update_silence_signal(self):
+        """Called when a silence phrase is detected in participant speech."""
+        self.silence_requested_until = time.time() + 120
+
+    def build_meeting_context(self, tangent_confidence: float = 0.0) -> "MeetingContext":
+        """Build a MeetingContext snapshot for speech gate evaluation."""
+        from speech_gate import MeetingContext
+
+        item = self.current_item
+        return MeetingContext(
+            style=self.style,
+            current_topic=item.topic if item else "",
+            current_item_state=item.state.value if item else "none",
+            elapsed_minutes=self.elapsed_minutes,
+            allocated_minutes=item.duration_minutes if item else 0.0,
+            meeting_overtime=self.meeting_overtime,
+            recent_transcript=self.get_recent_transcript(seconds=60),
+            in_override_grace=self.is_in_override_grace(),
+            silence_until=self.silence_requested_until,
+            tangent_confidence=tangent_confidence,
+            items_remaining=len(self.remaining_items),
+        )
+
     def can_intervene(self) -> bool:
         """Check if enough time has passed since last intervention."""
         if self.is_in_override_grace():
@@ -182,14 +217,12 @@ class MeetingState:
 
     def add_transcript(self, speaker: str, text: str):
         """Add a transcript entry to the buffer."""
-        self.transcript_buffer.append(
-            {
-                "speaker": speaker,
-                "text": text,
-                "timestamp": time.time(),
-            }
-        )
-        # Keep only last 2 minutes of transcript
+        entry = {"speaker": speaker, "text": text, "timestamp": time.time()}
+        self.transcript_buffer.append(entry)
+        # Dual-write to per-item store (full, no truncation)
+        idx = self.current_item_index
+        self.item_transcripts.setdefault(idx, []).append(entry)
+        # Keep only last 2 minutes in the rolling buffer
         cutoff = time.time() - 120
         self.transcript_buffer = [
             t for t in self.transcript_buffer if t["timestamp"] > cutoff
@@ -200,6 +233,27 @@ class MeetingState:
         cutoff = time.time() - seconds
         recent = [t for t in self.transcript_buffer if t["timestamp"] > cutoff]
         return "\n".join(f"{t['speaker']}: {t['text']}" for t in recent)
+
+    def get_item_transcript(self, item_index: int) -> str:
+        """Return the full transcript for an agenda item as a formatted string."""
+        entries = self.item_transcripts.get(item_index, [])
+        return "\n".join(f"{e['speaker']}: {e['text']}" for e in entries)
+
+    def get_memory_context(self) -> str:
+        """Format all completed item notes for injection into the system prompt."""
+        if not self.meeting_notes:
+            return "No completed items yet."
+        parts = []
+        for notes in self.meeting_notes:
+            section = [f"### {notes.topic}"]
+            if notes.key_points:
+                section.append("Key points: " + "; ".join(notes.key_points))
+            if notes.decisions:
+                section.append("Decisions: " + "; ".join(notes.decisions))
+            if notes.action_items:
+                section.append("Action items: " + "; ".join(notes.action_items))
+            parts.append("\n".join(section))
+        return "\n\n".join(parts)
 
     def get_context_for_prompt(self) -> dict:
         """Get current state formatted for Mistral prompts."""
@@ -232,4 +286,5 @@ class MeetingState:
             "current_topic": item.topic if item else "",
             "topic_description": item.description if item else "",
             "recent_transcript": self.get_recent_transcript(),
+            "meeting_memory": self.get_memory_context(),
         }

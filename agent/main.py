@@ -6,27 +6,37 @@ participants go off-topic or exceed their time box.
 """
 
 import asyncio
+import errno
 import json
 import logging
 import os
-import time
+import socket
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli, llm
+from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import deepgram, elevenlabs, openai, silero
 
-from monitor import MeetingState, ItemState
+from monitor import MeetingState, ItemState, ItemNotes, AgendaItem
 from prompts import (
     ASSESS_CONVERSATION_TOOL,
     BOT_INTRO_TEMPLATE,
     AGENDA_TRANSITION_TEMPLATE,
     FACILITATOR_SYSTEM_PROMPT,
+    ITEM_SUMMARY_TOOL,
+    ITEM_SUMMARY_PROMPT,
     MONITORING_PROMPT,
     STYLE_INSTRUCTIONS,
     TIME_WARNING_TEMPLATE,
+)
+from speech_gate import (
+    GateResult,
+    Trigger,
+    detect_silence_request,
+    evaluate as gate_evaluate,
 )
 
 # Resolve absolute path to .env so it works regardless of CWD or how Python
@@ -35,6 +45,37 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 logger = logging.getLogger("beat-your-meet")
 logger.setLevel(logging.INFO)
+
+
+def _resolve_agent_port() -> int:
+    """Resolve agent health-check port from AGENT_PORT with sane defaults."""
+    raw = os.environ.get("AGENT_PORT", "8081")
+    try:
+        port = int(raw)
+    except ValueError:
+        logger.warning("Invalid AGENT_PORT=%r; defaulting to 8081", raw)
+        return 8081
+
+    if not (0 <= port <= 65535):
+        logger.warning("Out-of-range AGENT_PORT=%r; defaulting to 8081", raw)
+        return 8081
+    return port
+
+
+def _is_port_in_use(port: int) -> bool:
+    """Return True when a TCP port is already bound on localhost."""
+    if port == 0:
+        return False
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", port))
+            return False
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return True
+            raise
 
 
 async def entrypoint(ctx: JobContext):
@@ -115,6 +156,9 @@ async def entrypoint(ctx: JobContext):
             remote = list(ctx.room.remote_participants.values())
             speaker = remote[0].identity if len(remote) == 1 else participant.identity
             meeting_state.add_transcript(speaker, event.transcript)
+            if detect_silence_request(event.transcript):
+                meeting_state.update_silence_signal()
+                logger.info("[gate] Silence signal set by %s", speaker)
             logger.info(f"[{speaker}] {event.transcript}")
 
         # Start the session
@@ -132,14 +176,17 @@ async def entrypoint(ctx: JobContext):
             first_item=first_item.topic if first_item else "the discussion",
         )
         await asyncio.sleep(2)  # Brief pause before intro
-        await session.say(intro, allow_interruptions=True)
+        await _guarded_say(session, meeting_state, intro, Trigger.INTRO)
 
         # Send initial agenda state to frontend via data channel
         await _send_agenda_state(ctx.room, meeting_state)
 
         # Start the monitoring loop — store reference to prevent garbage collection
         logger.info("Starting monitoring loop...")
-        _monitor_task = asyncio.create_task(_monitoring_loop(session, ctx, meeting_state))
+        style_instructions = STYLE_INSTRUCTIONS.get(meeting_state.style, STYLE_INSTRUCTIONS["moderate"])
+        _monitor_task = asyncio.create_task(
+            _monitoring_loop(session, ctx, meeting_state, agent, style_instructions)
+        )
 
         def _on_monitor_done(t: asyncio.Task) -> None:
             if not t.cancelled() and t.exception() is not None:
@@ -154,10 +201,92 @@ async def entrypoint(ctx: JobContext):
         raise
 
 
+async def _summarize_item(
+    client: "Mistral",
+    item: AgendaItem,
+    transcript: str,
+) -> ItemNotes:
+    """Summarise a completed agenda item using Mistral Small + tool calling."""
+    try:
+        response = await client.chat.complete_async(
+            model="mistral-small-latest",
+            messages=[
+                {
+                    "role": "user",
+                    "content": ITEM_SUMMARY_PROMPT.format(
+                        topic=item.topic,
+                        description=item.description,
+                        transcript=transcript or "(no transcript recorded)",
+                    ),
+                }
+            ],
+            tools=[ITEM_SUMMARY_TOOL],
+            tool_choice="any",
+            temperature=0.2,
+            max_tokens=512,
+        )
+        if response.choices[0].message.tool_calls:
+            args = json.loads(
+                response.choices[0].message.tool_calls[0].function.arguments
+            )
+            logger.info(f"Item summarization complete for '{item.topic}'")
+            return ItemNotes(
+                item_id=item.id,
+                topic=item.topic,
+                key_points=args.get("key_points", []),
+                decisions=args.get("decisions", []),
+                action_items=args.get("action_items", []),
+            )
+    except Exception as e:
+        logger.error(f"Item summarization failed: {e}")
+    # Fallback: empty notes
+    return ItemNotes(item_id=item.id, topic=item.topic)
+
+
+async def _refresh_agent_instructions(
+    agent: Agent,
+    state: MeetingState,
+    base_style_instructions: str,
+):
+    """Rebuild the facilitator system prompt and push it to the agent."""
+    ctx_data = state.get_context_for_prompt()
+    new_instructions = FACILITATOR_SYSTEM_PROMPT.format(
+        style_instructions=base_style_instructions,
+        **ctx_data,
+    )
+    await agent.update_instructions(new_instructions)
+    logger.info("Agent instructions refreshed with updated meeting memory")
+
+
+async def _guarded_say(
+    session: AgentSession,
+    state: MeetingState,
+    candidate_text: str,
+    trigger: str,
+    tangent_confidence: float = 0.0,
+) -> bool:
+    ctx = state.build_meeting_context(tangent_confidence=tangent_confidence)
+    result: GateResult = gate_evaluate(candidate_text, trigger, ctx)
+    logger.info(
+        "[gate] trigger=%s action=%s confidence=%.2f reason=%s",
+        trigger,
+        result.action,
+        result.confidence,
+        result.reason,
+    )
+    if result.action == "speak":
+        await session.say(result.text_for_tts, allow_interruptions=True)
+        state.record_intervention()
+        return True
+    return False
+
+
 async def _monitoring_loop(
     session: AgentSession,
     ctx: JobContext,
     state: MeetingState,
+    agent: Agent,
+    style_instructions: str,
 ):
     """Periodically check if conversation is on-track and handle time transitions."""
 
@@ -175,9 +304,11 @@ async def _monitoring_loop(
             # Check if meeting is over (no more items)
             if state.current_item is None:
                 try:
-                    await session.say(
+                    await _guarded_say(
+                        session,
+                        state,
                         "That wraps up our agenda. Great meeting, everyone!",
-                        allow_interruptions=True,
+                        Trigger.WRAP_UP,
                     )
                 except Exception:
                     logger.exception("Failed to deliver meeting wrap-up")
@@ -197,12 +328,20 @@ async def _monitoring_loop(
                 )
                 if state.can_intervene():
                     try:
-                        await session.say(warning, allow_interruptions=True)
-                        state.record_intervention()
+                        await _guarded_say(
+                            session,
+                            state,
+                            warning,
+                            Trigger.TIME_WARNING,
+                        )
                     except Exception:
                         logger.exception("Failed to deliver time warning")
 
             elif new_state == ItemState.OVERTIME:
+                # Capture the completed item before advancing
+                prev_index = state.current_item_index
+                completed_item = state.current_item
+
                 # Auto-advance to next item
                 next_item = state.advance_to_next()
                 if next_item:
@@ -211,10 +350,22 @@ async def _monitoring_loop(
                         duration=int(next_item.duration_minutes),
                     )
                     try:
-                        await session.say(transition, allow_interruptions=True)
-                        state.record_intervention()
+                        await _guarded_say(
+                            session,
+                            state,
+                            transition,
+                            Trigger.TRANSITION,
+                        )
                     except Exception:
                         logger.exception("Failed to deliver agenda transition")
+
+                # Summarise the completed item and refresh agent instructions
+                if completed_item:
+                    transcript = state.get_item_transcript(prev_index)
+                    notes = await _summarize_item(mistral_client, completed_item, transcript)
+                    state.meeting_notes.append(notes)
+                    await _refresh_agent_instructions(agent, state, style_instructions)
+
                 await _send_agenda_state(ctx.room, state)
                 continue
 
@@ -225,12 +376,18 @@ async def _monitoring_loop(
                 assessment = await _check_tangent(
                     mistral_client, state, transcript
                 )
-                if assessment and assessment.get("should_speak"):
+                if assessment:
                     spoken = assessment.get("spoken_response", "")
+                    confidence = assessment.get("confidence", 0.0)
                     if spoken:
                         try:
-                            await session.say(spoken, allow_interruptions=True)
-                            state.record_intervention()
+                            await _guarded_say(
+                                session,
+                                state,
+                                spoken,
+                                Trigger.TANGENT,
+                                tangent_confidence=confidence,
+                            )
                         except Exception:
                             logger.exception("Failed to deliver tangent intervention")
 
@@ -250,8 +407,6 @@ async def _check_tangent(
     item = state.current_item
     if not item:
         return None
-
-    ctx_data = state.get_context_for_prompt()
 
     try:
         response = await client.chat.complete_async(
@@ -283,9 +438,6 @@ async def _check_tangent(
                 response.choices[0].message.tool_calls[0].function.arguments
             )
             logger.info(f"Tangent check: {args.get('status')} (confidence: {args.get('confidence', 0):.2f})")
-            # Only intervene on high confidence off-topic assessments
-            if args.get("confidence", 0) < 0.7:
-                args["should_speak"] = False
             return args
 
     except Exception as e:
@@ -313,6 +465,16 @@ async def _send_agenda_state(room: rtc.Room, state: MeetingState):
             "elapsed_minutes": state.elapsed_minutes,
             "meeting_overtime": state.meeting_overtime,
             "total_meeting_minutes": state.total_meeting_minutes,
+            "meeting_notes": [
+                {
+                    "item_id": n.item_id,
+                    "topic": n.topic,
+                    "key_points": n.key_points,
+                    "decisions": n.decisions,
+                    "action_items": n.action_items,
+                }
+                for n in state.meeting_notes
+            ],
         }
     ).encode()
 
@@ -325,4 +487,13 @@ async def _send_agenda_state(room: rtc.Room, state: MeetingState):
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    agent_port = _resolve_agent_port()
+    if _is_port_in_use(agent_port):
+        logger.error(
+            "Agent startup blocked: TCP port %s is already in use. "
+            "Stop the existing agent process or set AGENT_PORT=0 for an ephemeral port.",
+            agent_port,
+        )
+        sys.exit(1)
+
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, port=agent_port))
