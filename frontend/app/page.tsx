@@ -28,7 +28,7 @@ export default function Home() {
   const [description, setDescription] = useState("");
   const [duration, setDuration] = useState(30);
   const [agenda, setAgenda] = useState<Agenda | null>(null);
-  const [style, setStyle] = useState<"gentle" | "moderate" | "aggressive">(
+  const [style, setStyle] = useState<"gentle" | "moderate" | "chatting">(
     "moderate"
   );
   const [loading, setLoading] = useState(false);
@@ -166,148 +166,195 @@ export default function Home() {
   }
 
   return (
-    <main className="max-w-2xl mx-auto px-4 py-12">
-      <div className="text-center mb-10">
-        <h1 className="text-4xl font-bold mb-2">Beat Your Meet</h1>
-        <p className="text-gray-400 text-lg">
-          AI meeting facilitator that keeps your meetings on track
-        </p>
-      </div>
+    <main className="landing-shell">
+      <section className="hero-wrap">
+        <div className="hero-noise" aria-hidden="true" />
+        <div className="hero-flares" aria-hidden="true" />
 
-      {/* Mode toggle */}
-      <div className="flex mb-8 bg-gray-900 rounded-lg p-1 border border-gray-700">
-        <button
-          onClick={() => { setMode("create"); setError(null); }}
-          className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
-            mode === "create"
-              ? "bg-blue-600 text-white"
-              : "text-gray-400 hover:text-white"
-          }`}
-        >
-          Create Meeting
-        </button>
-        <button
-          onClick={() => { setMode("join"); setError(null); }}
-          className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
-            mode === "join"
-              ? "bg-blue-600 text-white"
-              : "text-gray-400 hover:text-white"
-          }`}
-        >
-          Join Meeting
-        </button>
-      </div>
-
-      {error && (
-        <div className="mb-6 p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-400 text-sm">
-          <span className="font-medium">Error: </span>{error}
+        <div className="hero-copy">
+          <p className="hero-kicker">- BEATYOURMEET AI</p>
+          <h1 className="hero-title">BEATYOURMEET AI</h1>
+          <p className="hero-subtitle">
+            THE AUTONOMOUS MULTI-AGENT MEETING ORCHESTRATION
+          </p>
+          <p className="hero-meta">
+            Live meeting facilitation
+            <br />
+            Agenda guardrails, tangent recovery, and action capture
+          </p>
         </div>
-      )}
 
-      {mode === "join" ? (
-        <div className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Room Name
-            </label>
-            <input
-              type="text"
-              value={joinRoomName}
-              onChange={(e) => setJoinRoomName(e.target.value)}
-              placeholder="e.g. meet-a1b2c3d4"
-              className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Access Code
-            </label>
-            <input
-              type="text"
-              value={joinAccessCode}
-              onChange={(e) => setJoinAccessCode(e.target.value)}
-              placeholder="e.g. MEET-7X3K"
-              className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white font-mono tracking-widest placeholder-gray-500 focus:outline-none focus:border-blue-500"
-            />
-          </div>
-
-          <button
-            onClick={joinMeeting}
-            disabled={!joinRoomName.trim() || !joinAccessCode.trim()}
-            className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-lg transition-colors"
-          >
-            Join Meeting
-          </button>
-        </div>
-      ) : !agenda ? (
-        <div className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              What is this meeting about?
-            </label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g. Weekly standup to discuss progress on the Q1 roadmap, blockers, and hiring updates..."
-              className="w-full h-32 px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Meeting duration (minutes)
-            </label>
-            <div className="flex gap-3">
-              {[15, 30, 45, 60].map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setDuration(d)}
-                  className={`px-4 py-2 rounded-lg border transition-colors ${
-                    duration === d
-                      ? "bg-blue-600 border-blue-500 text-white"
-                      : "bg-gray-900 border-gray-700 text-gray-300 hover:border-gray-500"
-                  }`}
-                >
-                  {d} min
-                </button>
-              ))}
+        <div className="hero-centerpiece" aria-hidden="true">
+          <div className="primitive-orbit">
+            <div className="primitive-glow" />
+            <div className="geo-stage">
+              <div className="geo-primitive">
+                <span className="geo-face face-front" />
+                <span className="geo-face face-back" />
+                <span className="geo-face face-left" />
+                <span className="geo-face face-right" />
+                <span className="geo-face face-top" />
+                <span className="geo-face face-bottom" />
+              </div>
+              <div className="geo-specular" />
             </div>
           </div>
-
-          <button
-            onClick={generateAgenda}
-            disabled={!description.trim() || loading}
-            className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-lg transition-colors"
-          >
-            {loading ? "Generating agenda..." : "Generate Agenda"}
-          </button>
         </div>
-      ) : (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold">{agenda.title}</h2>
+
+        <a href="#setup" className="hero-cta">
+          Start a Meeting
+        </a>
+      </section>
+
+      <section id="setup" className="setup-wrap">
+        <div className="setup-shell">
+          <div className="setup-header">
+            <h2>Set Up Your Meeting</h2>
+            <p>Generate your agenda, tune facilitation strictness, and launch the room.</p>
+          </div>
+
+          <div className="mb-6 flex rounded-xl border border-white/15 bg-white/10 p-1">
             <button
-              onClick={() => setAgenda(null)}
-              className="text-sm text-gray-400 hover:text-white"
+              onClick={() => {
+                setMode("create");
+                setError(null);
+              }}
+              className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${
+                mode === "create"
+                  ? "bg-white/25 text-white"
+                  : "text-slate-300 hover:text-white"
+              }`}
             >
-              Start over
+              Create Meeting
+            </button>
+            <button
+              onClick={() => {
+                setMode("join");
+                setError(null);
+              }}
+              className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${
+                mode === "join"
+                  ? "bg-white/25 text-white"
+                  : "text-slate-300 hover:text-white"
+              }`}
+            >
+              Join Meeting
             </button>
           </div>
 
-          <AgendaEditor agenda={agenda} onUpdate={setAgenda} />
+          {error && (
+            <div className="mb-6 rounded-xl border border-red-300/25 bg-red-500/10 p-3 text-sm text-red-100">
+              <span className="font-semibold">Error: </span>
+              {error}
+            </div>
+          )}
 
-          <StyleSelector style={style} onSelect={setStyle} />
+          {mode === "join" ? (
+            <div className="space-y-6">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-100">
+                  Room Name
+                </label>
+                <input
+                  type="text"
+                  value={joinRoomName}
+                  onChange={(e) => setJoinRoomName(e.target.value)}
+                  placeholder="e.g. meet-a1b2c3d4"
+                  className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 font-mono text-white placeholder:text-slate-300/70 focus:border-slate-200/60 focus:outline-none"
+                />
+              </div>
 
-          <button
-            onClick={createMeeting}
-            disabled={creating}
-            className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-lg transition-colors"
-          >
-            {creating ? "Creating meeting..." : "Create Meeting"}
-          </button>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-100">
+                  Access Code
+                </label>
+                <input
+                  type="text"
+                  value={joinAccessCode}
+                  onChange={(e) => setJoinAccessCode(e.target.value)}
+                  placeholder="e.g. MEET-7X3K"
+                  className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 font-mono tracking-widest text-white placeholder:text-slate-300/70 focus:border-slate-200/60 focus:outline-none"
+                />
+              </div>
+
+              <button
+                onClick={joinMeeting}
+                disabled={!joinRoomName.trim() || !joinAccessCode.trim()}
+                className="w-full rounded-xl border border-emerald-200/30 bg-emerald-500/35 py-3 font-semibold text-white transition hover:bg-emerald-500/50 disabled:border-white/10 disabled:bg-white/10 disabled:text-slate-400"
+              >
+                Join Meeting
+              </button>
+            </div>
+          ) : !agenda ? (
+            <div className="space-y-6">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-100">
+                  What is this meeting about?
+                </label>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="e.g. Weekly standup to discuss progress on the Q1 roadmap, blockers, and hiring updates..."
+                  className="h-32 w-full resize-none rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-white placeholder:text-slate-300/70 focus:border-slate-200/60 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-100">
+                  Meeting duration (minutes)
+                </label>
+                <div className="flex flex-wrap gap-3">
+                  {[15, 30, 45, 60].map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => setDuration(d)}
+                      className={`rounded-xl border px-4 py-2 transition ${
+                        duration === d
+                          ? "border-white/45 bg-white/25 text-white"
+                          : "border-white/15 bg-white/10 text-slate-200 hover:border-white/35"
+                      }`}
+                    >
+                      {d} min
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={generateAgenda}
+                disabled={!description.trim() || loading}
+                className="w-full rounded-xl border border-white/35 bg-white/20 py-3 font-semibold text-white transition hover:bg-white/30 disabled:border-white/10 disabled:bg-white/10 disabled:text-slate-400"
+              >
+                {loading ? "Generating agenda..." : "Generate Agenda"}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xl font-semibold text-white">{agenda.title}</h3>
+                <button
+                  onClick={() => setAgenda(null)}
+                  className="text-sm text-slate-300 hover:text-white"
+                >
+                  Start over
+                </button>
+              </div>
+
+              <AgendaEditor agenda={agenda} onUpdate={setAgenda} />
+
+              <StyleSelector style={style} onSelect={setStyle} />
+
+              <button
+                onClick={createMeeting}
+                disabled={creating}
+                className="w-full rounded-xl border border-emerald-200/30 bg-emerald-500/35 py-3 font-semibold text-white transition hover:bg-emerald-500/50 disabled:border-white/10 disabled:bg-white/10 disabled:text-slate-400"
+              >
+                {creating ? "Creating meeting..." : "Create Meeting"}
+              </button>
+            </div>
+          )}
         </div>
-      )}
+      </section>
     </main>
   );
 }

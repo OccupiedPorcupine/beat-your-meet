@@ -47,7 +47,7 @@ class AgendaRequest(BaseModel):
 
 class CreateRoomRequest(BaseModel):
     agenda: dict
-    style: str  # "gentle" | "moderate" | "aggressive"
+    style: str  # "gentle" | "moderate" | "chatting"
 
 
 # ── Token Generation ─────────────────────────────────────────────────

@@ -39,7 +39,7 @@ class AgendaItem:
 class MeetingState:
     agenda_title: str
     items: list[AgendaItem]
-    style: str  # "gentle" | "moderate" | "aggressive"
+    style: str  # "gentle" | "moderate" | "chatting"
     current_item_index: int = 0
     item_start_time: float | None = None
     meeting_start_time: float | None = None
@@ -52,11 +52,10 @@ class MeetingState:
     item_transcripts: dict[int, list[dict]] = field(default_factory=dict)
     meeting_notes: list[ItemNotes] = field(default_factory=list)
 
-    # Tangent tolerance per style (seconds)
+    # Tangent tolerance per style (seconds). "chatting" disables tangent checks entirely.
     TANGENT_TOLERANCE = {
         "gentle": 60,
         "moderate": 30,
-        "aggressive": 10,
     }
 
     INTERVENTION_COOLDOWN = 30  # seconds between interventions
@@ -203,10 +202,12 @@ class MeetingState:
     def can_intervene_for_tangent(self) -> bool:
         """Check if enough time has passed since last intervention, using style-specific tolerance.
 
-        gentle=60s, moderate=30s, aggressive=10s. The tolerance is the minimum
-        number of seconds that must have elapsed since the last intervention before
-        the bot will speak up about a tangent.
+        gentle=60s, moderate=30s. "chatting" mode never triggers tangent checks.
+        The tolerance is the minimum number of seconds that must have elapsed since
+        the last intervention before the bot will speak up about a tangent.
         """
+        if self.style == "chatting":
+            return False
         if self.is_in_override_grace():
             return False
         tolerance = self.TANGENT_TOLERANCE.get(self.style, self.INTERVENTION_COOLDOWN)
