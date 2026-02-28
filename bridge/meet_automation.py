@@ -69,21 +69,17 @@ async def _dismiss_dialogs(page: Page) -> None:
 
 
 async def _disable_camera_and_mic(page: Page) -> None:
-    """Turn off camera and mic on the pre-join screen."""
+    """Turn off camera on the pre-join screen.
+
+    The mic is left ON because getUserMedia is overridden to return the
+    agent audio stream as the "microphone". If Meet mutes the mic, agent
+    audio won't reach other participants.
+    """
     # Camera off button
     try:
         cam_btn = page.locator('[aria-label*="camera" i][data-is-muted="false"]').first
         if await cam_btn.is_visible(timeout=2000):
             await cam_btn.click()
-            await asyncio.sleep(0.3)
-    except Exception:
-        pass
-
-    # Mic off button
-    try:
-        mic_btn = page.locator('[aria-label*="microphone" i][data-is-muted="false"]').first
-        if await mic_btn.is_visible(timeout=2000):
-            await mic_btn.click()
             await asyncio.sleep(0.3)
     except Exception:
         pass

@@ -39,7 +39,8 @@ logger = logging.getLogger("bridge")
 # Path to persistent Chrome profile for Google login
 CHROME_PROFILE_DIR = str(Path(__file__).resolve().parent / ".chrome-profile")
 
-# Path to the bridge.js script
+# Path to the bridge scripts
+BRIDGE_INIT_JS_PATH = Path(__file__).resolve().parent / "bridge_init.js"
 BRIDGE_JS_PATH = Path(__file__).resolve().parent / "bridge.js"
 
 
@@ -91,23 +92,22 @@ async def run_bridge(meet_url: str, room_name: str) -> None:
         page = context.pages[0] if context.pages else await context.new_page()
 
         try:
-            # Inject the bridge config and overrides BEFORE navigating to Meet.
-            # We use add_init_script so the overrides are in place when Meet's
-            # JavaScript runs (RTCPeerConnection and getUserMedia must be
-            # overridden before Meet creates its peer connections).
             bridge_config = {
                 "livekitUrl": livekit_url,
                 "livekitToken": livekit_token,
                 "roomName": room_name,
             }
 
-            # Read bridge.js source
+            # Read script sources
+            bridge_init_js_source = BRIDGE_INIT_JS_PATH.read_text()
             bridge_js_source = BRIDGE_JS_PATH.read_text()
 
-            # Set up init script that sets config and overrides
-            # Note: bridge.js is an async IIFE that self-executes
+            # Inject via add_init_script (CDP — runs BEFORE page JS, no CSP).
+            # This installs the RTCPeerConnection and getUserMedia overrides
+            # so they're in place when Meet creates its peer connections.
             await page.add_init_script(
-                f"window.__BRIDGE_CONFIG__ = {json.dumps(bridge_config)};"
+                f"window.__BRIDGE_CONFIG__ = {json.dumps(bridge_config)};\n"
+                f"{bridge_init_js_source}"
             )
 
             # Join the Google Meet
@@ -118,8 +118,9 @@ async def run_bridge(meet_url: str, room_name: str) -> None:
                 logger.error("Failed to join Google Meet")
                 return
 
-            # Now inject bridge.js (after joining, so Meet's RTCPeerConnections
-            # are already created and our override has captured their tracks)
+            # Now inject bridge.js (post-join). The RTC overrides from
+            # bridge_init.js have already captured Meet's audio tracks.
+            # bridge.js connects to LiveKit and publishes the captured audio.
             logger.info("Injecting audio bridge script...")
 
             # Load LiveKit SDK via Playwright's add_script_tag which uses CDP

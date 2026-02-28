@@ -1,15 +1,16 @@
 /**
- * Google Meet ↔ LiveKit Audio Bridge
+ * Google Meet ↔ LiveKit Audio Bridge (Post-Join)
  *
- * Injected into the Google Meet page by Playwright. This script:
- * 1. Overrides RTCPeerConnection to capture incoming Meet audio tracks
- * 2. Connects to a LiveKit room and publishes the captured audio
- * 3. Subscribes to agent audio from LiveKit and plays it into Meet
+ * Injected AFTER the meeting is joined and the LiveKit SDK is loaded.
+ * Relies on window.__BRIDGE_STATE__ (set by bridge_init.js via add_init_script)
+ * for the raw captured audio tracks and agent audio destination.
+ *
+ * This script:
+ * 1. Creates an AudioContext and wires up all captured Meet audio tracks
+ * 2. Connects to a LiveKit room and publishes the mixed audio
+ * 3. Subscribes to agent audio from LiveKit and routes it into Meet's mic
  * 4. Reports bridge status via LiveKit data channel
- *
- * Configuration is passed via window.__BRIDGE_CONFIG__ before injection.
  */
-
 (async () => {
   const config = window.__BRIDGE_CONFIG__;
   if (!config) {
@@ -17,7 +18,61 @@
     return;
   }
 
+  const state = window.__BRIDGE_STATE__;
+  if (!state) {
+    console.error(
+      "[Bridge] No __BRIDGE_STATE__ found — bridge_init.js did not run"
+    );
+    return;
+  }
+
   const { livekitUrl, livekitToken, roomName } = config;
+  const { capturedTracks, connectedTrackIds, getAgentAudio } = state;
+
+  // ── Audio graph setup ──────────────────────────────────────────
+  const audioContext = new AudioContext({ sampleRate: 48000 });
+  const mixerDestination = audioContext.createMediaStreamDestination();
+
+  // Gain node to control capture volume (muted during agent TTS)
+  const captureGain = audioContext.createGain();
+  captureGain.connect(mixerDestination);
+
+  // Wire up tracks already captured by bridge_init.js
+  console.log(
+    `[Bridge] Wiring up ${capturedTracks.length} previously captured tracks`
+  );
+  for (const track of capturedTracks) {
+    try {
+      const source = audioContext.createMediaStreamSource(
+        new MediaStream([track])
+      );
+      source.connect(captureGain);
+      console.log(`[Bridge] Wired existing track: ${track.id}`);
+    } catch (e) {
+      console.error(`[Bridge] Failed to wire track ${track.id}:`, e);
+    }
+  }
+
+  // Also hook future tracks (in case new participants join after bridge starts)
+  const originalPush = capturedTracks.push.bind(capturedTracks);
+  capturedTracks.push = function (...tracks) {
+    for (const track of tracks) {
+      try {
+        const source = audioContext.createMediaStreamSource(
+          new MediaStream([track])
+        );
+        source.connect(captureGain);
+        console.log(`[Bridge] Wired new track: ${track.id}`);
+      } catch (e) {
+        console.error(`[Bridge] Failed to wire new track ${track.id}:`, e);
+      }
+    }
+    return originalPush(...tracks);
+  };
+
+  // Get the agent audio destination (created lazily by bridge_init.js).
+  // Lives in its own AudioContext — agent tracks connect directly to it.
+  const agentDest = getAgentAudio();
 
   // ── Status reporting ─────────────────────────────────────────────
   let livekitRoom = null;
@@ -39,86 +94,12 @@
     }
   }
 
-  // ── Audio capture setup ──────────────────────────────────────────
-  const audioContext = new AudioContext({ sampleRate: 48000 });
-  const mixerDestination = audioContext.createMediaStreamDestination();
-
-  // Gain node to control capture volume and muting during TTS
-  const captureGain = audioContext.createGain();
-  captureGain.connect(mixerDestination);
-
-  // Track connected audio sources to avoid duplicates
-  const connectedTracks = new Set();
-
-  // ── RTCPeerConnection override ───────────────────────────────────
-  // Must be set up BEFORE Google Meet creates its peer connections
-  const OriginalRTCPeerConnection = window.RTCPeerConnection;
-
-  window.RTCPeerConnection = function (...args) {
-    const pc = new OriginalRTCPeerConnection(...args);
-
-    pc.addEventListener("track", (event) => {
-      if (event.track.kind === "audio") {
-        const trackId = event.track.id;
-        if (connectedTracks.has(trackId)) return;
-        connectedTracks.add(trackId);
-
-        console.log(`[Bridge] Captured audio track: ${trackId}`);
-
-        try {
-          const source = audioContext.createMediaStreamSource(
-            new MediaStream([event.track])
-          );
-          source.connect(captureGain);
-        } catch (e) {
-          console.error("[Bridge] Failed to connect audio source:", e);
-        }
-
-        // Clean up when track ends
-        event.track.addEventListener("ended", () => {
-          connectedTracks.delete(trackId);
-          console.log(`[Bridge] Audio track ended: ${trackId}`);
-        });
-      }
-    });
-
-    return pc;
-  };
-
-  // Preserve prototype chain
-  window.RTCPeerConnection.prototype = OriginalRTCPeerConnection.prototype;
-
-  // ── getUserMedia override (for injecting agent audio as mic) ─────
-  const agentDestination = audioContext.createMediaStreamDestination();
-  const agentGain = audioContext.createGain();
-  agentGain.connect(agentDestination);
-
-  const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(
-    navigator.mediaDevices
-  );
-
-  navigator.mediaDevices.getUserMedia = async function (constraints) {
-    if (constraints && constraints.audio) {
-      console.log("[Bridge] Intercepted getUserMedia — returning agent audio stream");
-      // Return the agent audio stream as the "microphone"
-      // Also include video if requested
-      if (constraints.video) {
-        const videoStream = await originalGetUserMedia({ video: constraints.video });
-        const combinedStream = new MediaStream([
-          ...agentDestination.stream.getAudioTracks(),
-          ...videoStream.getVideoTracks(),
-        ]);
-        return combinedStream;
-      }
-      return agentDestination.stream;
-    }
-    return originalGetUserMedia(constraints);
-  };
-
-  // ── LiveKit SDK (loaded by Playwright's add_script_tag before this runs) ──
+  // ── LiveKit SDK ────────────────────────────────────────────────
   const LivekitClient = window.LivekitClient;
   if (!LivekitClient) {
-    console.error("[Bridge] LiveKit SDK not found on window — was it loaded before bridge.js?");
+    console.error(
+      "[Bridge] LiveKit SDK not found — was it loaded before bridge.js?"
+    );
     sendStatus("ERROR", "LiveKit SDK not available");
     return;
   }
@@ -143,15 +124,16 @@
   // ── Publish captured Meet audio to LiveKit ───────────────────────
   sendStatus("CONNECTING", "Publishing audio to LiveKit...");
 
-  try {
-    // Resume AudioContext (Chrome requires user gesture, but Playwright
-    // can bypass this with --autoplay-policy=no-user-gesture-required)
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
 
+  async function publishCapturedAudio() {
     const capturedTrack = mixerDestination.stream.getAudioTracks()[0];
-    if (capturedTrack) {
+    if (!capturedTrack) {
+      return false;
+    }
+    try {
       await livekitRoom.localParticipant.publishTrack(capturedTrack, {
         name: "meet-capture",
         source: LivekitClient.Track.Source.Microphone,
@@ -159,19 +141,38 @@
         red: false,
       });
       console.log("[Bridge] Published Meet audio to LiveKit");
-    } else {
-      console.warn("[Bridge] No audio track available yet — will publish when available");
+      return true;
+    } catch (e) {
+      console.error("[Bridge] Failed to publish audio:", e);
+      sendStatus("ERROR", `Audio publish failed: ${e.message}`);
+      return false;
     }
-  } catch (e) {
-    console.error("[Bridge] Failed to publish audio:", e);
-    sendStatus("ERROR", `Audio publish failed: ${e.message}`);
+  }
+
+  // Try to publish immediately; if no tracks yet, retry with backoff
+  if (!(await publishCapturedAudio())) {
+    console.log("[Bridge] No audio tracks yet — retrying with backoff...");
+    let published = false;
+    for (let attempt = 0; attempt < 15; attempt++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      console.log(
+        `[Bridge] Publish retry ${attempt + 1}/15 (captured tracks: ${connectedTrackIds.size})`
+      );
+      if (await publishCapturedAudio()) {
+        published = true;
+        break;
+      }
+    }
+    if (!published) {
+      console.error("[Bridge] Failed to publish audio after all retries");
+      sendStatus("ERROR", "No audio tracks captured from Meet");
+    }
   }
 
   // ── Subscribe to agent audio from LiveKit ────────────────────────
   livekitRoom.on(
     LivekitClient.RoomEvent.TrackSubscribed,
     (track, publication, participant) => {
-      // Only subscribe to audio tracks from the agent (not our own)
       if (
         track.kind === "audio" &&
         participant.identity !== livekitRoom.localParticipant.identity
@@ -181,9 +182,12 @@
         );
 
         try {
+          // Route agent audio into the agent AudioContext's destination
+          // so it flows through the getUserMedia override into Meet
+          const agentCtx = agentDest.context;
           const mediaStream = new MediaStream([track.mediaStreamTrack]);
-          const source = audioContext.createMediaStreamSource(mediaStream);
-          source.connect(agentGain);
+          const source = agentCtx.createMediaStreamSource(mediaStream);
+          source.connect(agentDest);
           console.log("[Bridge] Agent audio routed to Meet microphone");
         } catch (e) {
           console.error("[Bridge] Failed to route agent audio:", e);
@@ -193,7 +197,6 @@
   );
 
   // ── Echo cancellation: mute capture during agent speech ──────────
-  // Listen for data channel messages signaling agent speech state
   livekitRoom.on(
     LivekitClient.RoomEvent.DataReceived,
     (payload, participant, kind, topic) => {
@@ -201,10 +204,8 @@
         try {
           const data = JSON.parse(new TextDecoder().decode(payload));
           if (data.speaking) {
-            // Mute the capture (don't send agent's own voice back)
             captureGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.1);
           } else {
-            // Unmute capture after agent stops speaking
             captureGain.gain.setTargetAtTime(1, audioContext.currentTime, 0.3);
           }
         } catch (e) {
@@ -219,8 +220,9 @@
   // ── Health monitoring ────────────────────────────────────────────
   setInterval(() => {
     const stats = {
-      capturedTracks: connectedTracks.size,
+      capturedTracks: connectedTrackIds.size,
       audioContextState: audioContext.state,
+      agentAudioContextState: agentDest.context.state,
       livekitState: livekitRoom.state,
     };
     console.log("[Bridge] Health:", JSON.stringify(stats));

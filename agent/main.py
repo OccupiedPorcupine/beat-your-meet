@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -325,4 +326,10 @@ async def _send_agenda_state(room: rtc.Room, state: MeetingState):
 
 
 if __name__ == "__main__":
+    # Local-dev convenience: `python main.py` defaults to auto-dispatch mode.
+    # Explicit subcommands like `python main.py start` still take precedence.
+    if len(sys.argv) == 1:
+        logger.info("No subcommand provided; defaulting to `dev` mode.")
+        sys.argv.append("dev")
+
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
