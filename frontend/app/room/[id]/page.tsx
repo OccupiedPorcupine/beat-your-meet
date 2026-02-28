@@ -107,7 +107,6 @@ export default function RoomPage() {
       audio={preJoinChoices.audioEnabled}
       video={preJoinChoices.videoEnabled}
       data-lk-theme="default"
-      className="h-screen flex flex-col"
     >
       <MeetingRoom />
     </LiveKitRoom>
@@ -138,9 +137,9 @@ function MeetingRoom() {
   ]);
 
   return (
-    <>
+    <div className="h-screen flex flex-col">
       {/* Video grid */}
-      <div className="flex-1 relative overflow-hidden">
+      <div className="flex-1 relative overflow-hidden min-h-0">
         <LayoutContextProvider>
           <GridLayout tracks={tracks} className="h-full">
             <SmartParticipantTile />
@@ -155,7 +154,7 @@ function MeetingRoom() {
         />
       </div>
 
-      {/* Control bar */}
+      {/* Control bar pinned to bottom */}
       <CustomControlBar
         agendaPanelOpen={agendaPanelOpen}
         onToggleAgendaPanel={() => setAgendaPanelOpen((o) => !o)}
@@ -163,6 +162,6 @@ function MeetingRoom() {
 
       <RoomAudioRenderer />
       <ConnectionStateToast />
-    </>
+    </div>
   );
 }
