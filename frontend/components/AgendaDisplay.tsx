@@ -30,12 +30,12 @@ export interface AgendaState {
 
 function ItemNotesPanel({ notes }: { notes: ItemNotes }) {
   return (
-    <div className="mt-1 pl-2 border-l border-gray-700 text-xs space-y-1">
+    <div className="mt-1 pl-2 text-xs space-y-1" style={{ borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
       {notes.key_points.map((p, i) => (
-        <p key={i} className="text-gray-400">{p}</p>
+        <p key={i} style={{ color: "rgba(200,210,240,0.60)" }}>{p}</p>
       ))}
       {notes.decisions.map((d, i) => (
-        <p key={i} className="text-blue-400">✓ {d}</p>
+        <p key={i} style={{ color: "#ff7a18" }}>✓ {d}</p>
       ))}
       {notes.action_items.map((a, i) => (
         <p key={i} className="text-amber-400">→ {a}</p>
@@ -73,12 +73,12 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
   const currentItem = state.items[state.current_item_index];
 
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+    <div className="rounded-xl overflow-hidden" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.09)" }}>
       {/* Header with overall meeting time */}
-      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-        <h2 className="font-semibold">Agenda</h2>
+      <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+        <h2 className="font-semibold text-sm" style={{ color: "rgba(220,220,240,0.90)" }}>Agenda</h2>
         <div className="flex items-center gap-4 text-sm">
-          <span className="text-gray-400">
+          <span style={{ color: "rgba(180,180,200,0.55)" }}>
             Meeting: {formatMinutes(liveTotalMinutes)}
           </span>
           {state.meeting_overtime > 0 && (
@@ -90,7 +90,7 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
       </div>
 
       {/* Agenda items */}
-      <div className="divide-y divide-gray-800">
+      <div style={{ borderTop: "none" }}>
         {state.items.map((item, index) => {
           const isActive = index === state.current_item_index;
           const isCompleted = item.state === "completed";
@@ -104,50 +104,54 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
           return (
             <div
               key={item.id}
-              className={`px-4 py-3 transition-colors ${
-                isActive
-                  ? "bg-blue-600/10"
-                  : isCompleted
-                  ? "opacity-60"
-                  : ""
-              }`}
+              className="px-4 py-3 transition-colors"
+              style={{
+                background: isActive ? "rgba(255,122,24,0.07)" : "transparent",
+                opacity: isCompleted ? 0.6 : 1,
+                borderBottom: "1px solid rgba(255,255,255,0.06)",
+              }}
             >
               <div className="flex items-center gap-3">
                 {/* Status indicator */}
                 <div
-                  className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                    isActive
+                  className="w-2 h-2 rounded-full flex-shrink-0"
+                  style={{
+                    background: isActive
                       ? isOvertime
-                        ? "bg-red-500"
+                        ? "#ef4444"
                         : isWarning
-                        ? "bg-amber-500"
-                        : "bg-green-500"
+                        ? "#f59e0b"
+                        : "#22c55e"
                       : isCompleted
-                      ? "bg-gray-600"
-                      : "bg-gray-700"
-                  }`}
+                      ? "rgba(180,180,200,0.25)"
+                      : "rgba(180,180,200,0.18)",
+                  }}
                 />
 
                 {/* Topic */}
                 <span
-                  className={`flex-1 ${
-                    isCompleted ? "line-through text-gray-500" : "text-white"
-                  }`}
+                  className="flex-1 text-sm"
+                  style={
+                    isCompleted
+                      ? { textDecoration: "line-through", color: "rgba(180,180,200,0.40)" }
+                      : { color: "rgba(230,230,245,0.90)" }
+                  }
                 >
                   {item.topic}
                 </span>
 
                 {/* Time */}
                 <span
-                  className={`text-sm font-mono ${
-                    isActive && isOvertime
-                      ? "text-red-400"
+                  className="text-sm font-mono"
+                  style={{
+                    color: isActive && isOvertime
+                      ? "#f87171"
                       : isActive && isWarning
-                      ? "text-amber-400"
+                      ? "#fbbf24"
                       : isActive
-                      ? "text-blue-400"
-                      : "text-gray-500"
-                  }`}
+                      ? "#ff7a18"
+                      : "rgba(160,160,180,0.45)",
+                  }}
                 >
                   {isActive
                     ? `${formatMinutes(liveElapsedMinutes)} / ${item.duration_minutes}m`
@@ -166,18 +170,16 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
 
       {/* Current item progress bar */}
       {currentItem && (
-        <div className="px-4 py-2 border-t border-gray-800">
-          <div className="w-full bg-gray-800 rounded-full h-1.5">
+        <div className="px-4 py-2" style={{ borderTop: "1px solid rgba(255,255,255,0.07)" }}>
+          <div className="w-full rounded-full h-1.5" style={{ background: "rgba(255,255,255,0.08)" }}>
             <div
-              className={`h-1.5 rounded-full transition-all duration-1000 ${
-                liveElapsedMinutes > currentItem.duration_minutes
-                  ? "bg-red-500"
-                  : liveElapsedMinutes >
-                    currentItem.duration_minutes * 0.8
-                  ? "bg-amber-500"
-                  : "bg-blue-500"
-              }`}
+              className="h-1.5 rounded-full transition-all duration-1000"
               style={{
+                background: liveElapsedMinutes > currentItem.duration_minutes
+                  ? "#ef4444"
+                  : liveElapsedMinutes > currentItem.duration_minutes * 0.8
+                  ? "#f59e0b"
+                  : "#ff7a18",
                 width: `${Math.min(
                   100,
                   (liveElapsedMinutes / currentItem.duration_minutes) * 100

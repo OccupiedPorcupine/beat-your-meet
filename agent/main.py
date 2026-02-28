@@ -27,6 +27,8 @@ from monitor import MeetingState, ItemState, ItemNotes, AgendaItem
 from prompts import (
     ASSESS_CONVERSATION_TOOL,
     BOT_INTRO_TEMPLATE,
+    CHATTING_INTRO_TEMPLATE,
+    CHATTING_SYSTEM_PROMPT,
     AGENDA_TRANSITION_TEMPLATE,
     FACILITATOR_SYSTEM_PROMPT,
     ITEM_SUMMARY_TOOL,
@@ -61,6 +63,27 @@ _TIME_QUERY_PATTERNS = (
     re.compile(r"\btime\s+left\b"),
     re.compile(r"\bremaining\s+time\b"),
     re.compile(r"\bminutes?\s+left\b"),
+)
+
+_SKIP_PATTERNS = (
+    re.compile(r"\bskip\s+(this|that|the\s+\w+|current)\b"),
+    re.compile(r"\blet'?s?\s+skip\b"),
+    re.compile(r"\bcan\s+we\s+skip\b"),
+    re.compile(r"\bmove\s+on\s+to\s+the\s+next\b"),
+    re.compile(r"\bnext\s+agenda\s+item\b"),
+    re.compile(r"\bnext\s+topic\b"),
+    re.compile(r"\bskip\s+ahead\b"),
+)
+
+_END_MEETING_PATTERNS = (
+    re.compile(r"\bend\s+the\s+meeting\b"),
+    re.compile(r"\bmeeting\s+is\s+(over|done|ended|finished)\b"),
+    re.compile(r"\bmeeting'?s\s+(over|done|ended)\b"),
+    re.compile(r"\blet'?s?\s+end\s+(the\s+)?meeting\b"),
+    re.compile(r"\badjourn\b"),
+    re.compile(r"\bthat'?s?\s+(it|all)\s+for\s+today\b"),
+    re.compile(r"\bclose\s+(the\s+)?meeting\b"),
+    re.compile(r"\bwe'?re?\s+done\s+(with\s+the\s+)?meeting\b"),
 )
 
 
@@ -139,6 +162,22 @@ def _is_time_query(text: str) -> bool:
     return any(pattern.search(normalized) for pattern in _TIME_QUERY_PATTERNS)
 
 
+def _is_skip_request(text: str) -> bool:
+    """Return True if the utterance is a request to skip the current agenda item."""
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _SKIP_PATTERNS)
+
+
+def _is_end_meeting_request(text: str) -> bool:
+    """Return True if the utterance signals the meeting should end."""
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _END_MEETING_PATTERNS)
+
+
 def _format_duration_for_tts(minutes: float) -> str:
     """Format minute float as concise speech-friendly duration text."""
     total_seconds = max(0, int(round(minutes * 60)))
@@ -188,18 +227,21 @@ def _format_time_status_for_tts(status: dict) -> str:
 
 
 class BeatFacilitatorAgent(Agent):
-    """Agent wrapper that serves deterministic time answers without LLM calls."""
+    """Agent wrapper that serves deterministic time answers without LLM calls
+    and handles skip / end-meeting commands directly."""
 
     def __init__(
         self,
         *,
         meeting_state: MeetingState,
         deterministic_time_queries_enabled: bool,
+        room: "rtc.Room | None" = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._meeting_state = meeting_state
         self._deterministic_time_queries_enabled = deterministic_time_queries_enabled
+        self._room = room
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         latest_user_text = _extract_latest_user_text(chat_ctx)
@@ -217,7 +259,35 @@ class BeatFacilitatorAgent(Agent):
 
         if is_time_query:
             logger.info("time_query_detected=true time_query_path=llm")
-        else:
+
+        # --- Skip current agenda item ---
+        if _is_skip_request(latest_user_text) and self._room:
+            state = self._meeting_state
+            current_topic = state.current_item.topic if state.current_item else None
+            if current_topic:
+                next_item = state.advance_to_next()
+                asyncio.create_task(_send_agenda_state(self._room, state))
+                asyncio.create_task(_refresh_agent_instructions(self, state))
+                state.record_intervention()
+                if next_item:
+                    logger.info("skip_request: skipped '%s', moving to '%s'", current_topic, next_item.topic)
+                    yield f"Sure, skipping {current_topic}. Moving on to {next_item.topic}."
+                else:
+                    logger.info("skip_request: skipped '%s', no more items", current_topic)
+                    yield f"Sure, skipping {current_topic}. That was the last agenda item — great meeting everyone!"
+                return
+
+        # --- End meeting ---
+        if _is_end_meeting_request(latest_user_text) and self._room:
+            logger.info("end_meeting_request detected")
+            payload = json.dumps({"type": "meeting_ended"}).encode()
+            asyncio.create_task(
+                self._room.local_participant.publish_data(payload, reliable=True, topic="agenda")
+            )
+            yield "Thanks everyone, it's been a great meeting! Take care and goodbye!"
+            return
+
+        if not is_time_query:
             logger.debug("time_query_detected=false")
 
         async for chunk in super().llm_node(chat_ctx, tools, model_settings):
@@ -270,13 +340,16 @@ async def entrypoint(ctx: JobContext):
         )
 
         # Build system instructions
-        ctx_data = meeting_state.get_context_for_prompt()
-        instructions = FACILITATOR_SYSTEM_PROMPT.format(
-            style_instructions=STYLE_INSTRUCTIONS.get(
-                meeting_state.style, STYLE_INSTRUCTIONS["moderate"]
-            ),
-            **ctx_data,
-        )
+        if meeting_state.style == "chatting":
+            instructions = CHATTING_SYSTEM_PROMPT
+        else:
+            ctx_data = meeting_state.get_context_for_prompt()
+            instructions = FACILITATOR_SYSTEM_PROMPT.format(
+                style_instructions=STYLE_INSTRUCTIONS.get(
+                    meeting_state.style, STYLE_INSTRUCTIONS["moderate"]
+                ),
+                **ctx_data,
+            )
         deterministic_time_queries_enabled = _resolve_bool_env(
             "DETERMINISTIC_TIME_QUERIES", default=True
         )
@@ -297,6 +370,7 @@ async def entrypoint(ctx: JobContext):
             ),
             meeting_state=meeting_state,
             deterministic_time_queries_enabled=deterministic_time_queries_enabled,
+            room=ctx.room,
         )
 
         session = AgentSession()
@@ -316,18 +390,35 @@ async def entrypoint(ctx: JobContext):
                 logger.info("[gate] Silence signal set by %s", speaker)
             logger.info(f"[{speaker}] {event.transcript}")
 
+        # Shared Mistral client for chat @beat responses
+        from mistralai import Mistral as _Mistral
+        mistral_chat_client = _Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+
         @ctx.room.on("data_received")
         def on_data_received(data: rtc.DataPacket):
-            # Any participant can change style during the meeting.
             try:
                 msg = json.loads(data.data.decode())
+
+                # Style change from any participant
                 if (
                     msg.get("type") == "set_style"
-                    and msg.get("style") in ("gentle", "moderate", "aggressive")
+                    and msg.get("style") in ("gentle", "moderate", "chatting")
                 ):
                     meeting_state.style = msg["style"]
                     logger.info(f"Style changed to {msg['style']}")
                     asyncio.create_task(_refresh_agent_instructions(agent, meeting_state))
+
+                # @beat mention in the chat
+                elif msg.get("type") == "chat_message" and not msg.get("is_agent"):
+                    text = msg.get("text", "")
+                    if text.strip().lower().startswith("@beat"):
+                        question = text.strip()[5:].strip()  # strip "@beat"
+                        sender = msg.get("sender", "someone")
+                        asyncio.create_task(
+                            _handle_chat_mention(
+                                ctx.room, meeting_state, mistral_chat_client, agent, sender, question
+                            )
+                        )
             except Exception:
                 logger.exception("Failed to handle data_received")
 
@@ -345,12 +436,15 @@ async def entrypoint(ctx: JobContext):
         )
 
         # Deliver bot introduction
-        first_item = meeting_state.items[0] if meeting_state.items else None
-        intro = BOT_INTRO_TEMPLATE.format(
-            num_items=len(meeting_state.items),
-            total_minutes=int(meeting_state.total_scheduled_minutes),
-            first_item=first_item.topic if first_item else "the discussion",
-        )
+        if meeting_state.style == "chatting":
+            intro = CHATTING_INTRO_TEMPLATE
+        else:
+            first_item = meeting_state.items[0] if meeting_state.items else None
+            intro = BOT_INTRO_TEMPLATE.format(
+                num_items=len(meeting_state.items),
+                total_minutes=int(meeting_state.total_scheduled_minutes),
+                first_item=first_item.topic if first_item else "the discussion",
+            )
         await asyncio.sleep(2)  # Brief pause before intro
         await _guarded_say(session, meeting_state, intro, Trigger.INTRO)
 
@@ -418,19 +512,118 @@ async def _summarize_item(
     return ItemNotes(item_id=item.id, topic=item.topic)
 
 
+async def _handle_chat_mention(
+    room: rtc.Room,
+    state: MeetingState,
+    client: "Mistral",
+    agent: Agent,
+    sender: str,
+    question: str,
+):
+    """Handle an @beat chat mention — mirrors all voice capabilities."""
+
+    async def _reply(text: str) -> None:
+        payload = json.dumps({
+            "type": "chat_message",
+            "sender": "Beat",
+            "text": text,
+            "is_agent": True,
+            "timestamp": time.time(),
+        }).encode()
+        try:
+            await room.local_participant.publish_data(payload, reliable=True, topic="chat")
+        except Exception:
+            logger.exception("Failed to publish @beat chat response")
+
+    # --- Skip current agenda item ---
+    if _is_skip_request(question):
+        current_topic = state.current_item.topic if state.current_item else None
+        if current_topic:
+            next_item = state.advance_to_next()
+            await _send_agenda_state(room, state)
+            await _refresh_agent_instructions(agent, state)
+            state.record_intervention()
+            if next_item:
+                logger.info("chat skip: '%s' → '%s'", current_topic, next_item.topic)
+                await _reply(f"Skipping {current_topic}. Moving on to {next_item.topic}.")
+            else:
+                logger.info("chat skip: '%s' was the last item", current_topic)
+                await _reply(f"Skipping {current_topic}. That was the last agenda item — great meeting!")
+        else:
+            await _reply("There are no active agenda items to skip.")
+        return
+
+    # --- End meeting ---
+    if _is_end_meeting_request(question):
+        logger.info("chat end_meeting request from %s", sender)
+        ended_payload = json.dumps({"type": "meeting_ended"}).encode()
+        try:
+            await room.local_participant.publish_data(ended_payload, reliable=True, topic="agenda")
+        except Exception:
+            logger.exception("Failed to publish meeting_ended via chat")
+        await _reply("Thanks everyone, it's been a great meeting! Goodbye!")
+        return
+
+    # --- Time query (deterministic, no LLM needed) ---
+    if _is_time_query(question):
+        status = state.get_time_status()
+        await _reply(_format_time_status_for_tts(status))
+        return
+
+    # --- General question → Mistral ---
+    item = state.current_item
+    ctx_summary = (
+        f"Meeting style: {state.style}. "
+        f"Current agenda item: '{item.topic}', "
+        f"elapsed {state.elapsed_minutes:.1f} of {item.duration_minutes} min."
+        if item
+        else f"Meeting style: {state.style}. No active agenda item."
+    )
+
+    try:
+        response = await client.chat.complete_async(
+            model="mistral-small-latest",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Beat, an AI meeting assistant replying in a text chat. "
+                        f"{ctx_summary} "
+                        "Be concise and helpful. 1–3 sentences max. Plain text only."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": question if question else "You were mentioned.",
+                },
+            ],
+            temperature=0.4,
+            max_tokens=200,
+        )
+        reply_text = response.choices[0].message.content.strip()
+    except Exception:
+        logger.exception("Chat @beat LLM call failed")
+        reply_text = "Sorry, I couldn't process that right now."
+
+    await _reply(reply_text)
+
+
 async def _refresh_agent_instructions(
     agent: Agent,
     state: MeetingState,
 ):
     """Rebuild the facilitator system prompt and push it to the agent."""
-    ctx_data = state.get_context_for_prompt()
-    new_instructions = FACILITATOR_SYSTEM_PROMPT.format(
-        style_instructions=STYLE_INSTRUCTIONS.get(
-            state.style, STYLE_INSTRUCTIONS["moderate"]
-        ),
-        **ctx_data,
-    )
-    await agent.update_instructions(new_instructions)
+    if state.style == "chatting":
+        await agent.update_instructions(CHATTING_SYSTEM_PROMPT)
+    else:
+        ctx_data = state.get_context_for_prompt()
+        new_instructions = FACILITATOR_SYSTEM_PROMPT.format(
+            style_instructions=STYLE_INSTRUCTIONS.get(
+                state.style, STYLE_INSTRUCTIONS["moderate"]
+            ),
+            **ctx_data,
+        )
+        await agent.update_instructions(new_instructions)
     logger.info(f"Agent instructions refreshed (style={state.style})")
 
 
@@ -476,6 +669,12 @@ async def _monitoring_loop(
         await asyncio.sleep(check_interval)
 
         try:
+            # In chatting mode skip all facilitation — just keep the UI in sync.
+            if state.style == "chatting":
+                await _refresh_agent_instructions(agent, state)
+                await _send_agenda_state(ctx.room, state)
+                continue
+
             # Check if meeting is over (no more items)
             if state.current_item is None:
                 try:
@@ -544,8 +743,7 @@ async def _monitoring_loop(
                 await _send_agenda_state(ctx.room, state)
                 continue
 
-            # Check for tangent detection — use style-specific tolerance so gentle/aggressive
-            # styles actually behave differently (bug: TANGENT_TOLERANCE was defined but unused)
+            # Check for tangent detection
             transcript = state.get_recent_transcript(seconds=60)
             if transcript and state.can_intervene_for_tangent():
                 assessment = await _check_tangent(

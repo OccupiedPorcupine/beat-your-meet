@@ -1,6 +1,6 @@
 "use client";
 
-type Style = "gentle" | "moderate" | "aggressive";
+type Style = "gentle" | "moderate" | "chatting";
 
 interface StyleSelectorProps {
   style: Style;
@@ -8,6 +8,11 @@ interface StyleSelectorProps {
 }
 
 const STYLES: { value: Style; label: string; description: string }[] = [
+  {
+    value: "chatting",
+    label: "Chat",
+    description: "No agenda tracking, just answer questions",
+  },
   {
     value: "gentle",
     label: "Gentle",
@@ -17,11 +22,6 @@ const STYLES: { value: Style; label: string; description: string }[] = [
     value: "moderate",
     label: "Moderate",
     description: "Friendly but firm, balanced (30s)",
-  },
-  {
-    value: "aggressive",
-    label: "Aggressive",
-    description: "Direct and action-oriented (10s)",
   },
 ];
 
@@ -38,7 +38,7 @@ export default function StyleSelector({ style, onSelect }: StyleSelectorProps) {
             onClick={() => onSelect(s.value)}
             className={`p-3 rounded-lg border text-left transition-colors ${
               style === s.value
-                ? "bg-blue-600/20 border-blue-500 text-white"
+                ? "bg-blue-600 border-blue-600 text-white"
                 : "bg-gray-900 border-gray-700 text-gray-300 hover:border-gray-500"
             }`}
           >

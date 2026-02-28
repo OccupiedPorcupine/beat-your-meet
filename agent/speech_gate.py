@@ -21,7 +21,7 @@ class Trigger:
 
 @dataclass
 class MeetingContext:
-    style: str  # "gentle" | "moderate" | "aggressive"
+    style: str  # "gentle" | "moderate" | "chatting"
     current_topic: str
     current_item_state: str  # ItemState.value
     elapsed_minutes: float
@@ -60,7 +60,7 @@ _SILENCE_PHRASES = [
     "shh",
 ]
 
-_TANGENT_THRESHOLD = {"gentle": 0.80, "moderate": 0.70, "aggressive": 0.60}
+_TANGENT_THRESHOLD = {"gentle": 0.80, "moderate": 0.70}
 _WORD_RE = re.compile(r"\b[\w']+\b")
 
 
@@ -116,6 +116,20 @@ def _emit(
 def evaluate(candidate_text: str, trigger: str, ctx: MeetingContext) -> GateResult:
     """Evaluate whether a candidate utterance should be spoken."""
     candidate = candidate_text.strip()
+
+    # In chatting mode all proactive facilitation is disabled; only direct
+    # questions and the intro are ever spoken.
+    if ctx.style == "chatting" and trigger not in {
+        Trigger.INTRO,
+        Trigger.DIRECT_QUESTION,
+    }:
+        return _emit(
+            trigger=trigger,
+            action="silent",
+            text_for_tts="",
+            reason="chatting mode: proactive facilitation disabled",
+            confidence=1.0,
+        )
 
     if not candidate:
         return _emit(
