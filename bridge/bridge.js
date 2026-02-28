@@ -95,7 +95,9 @@
   }
 
   // ── LiveKit SDK ────────────────────────────────────────────────
-  const LivekitClient = window.LivekitClient;
+  // The UMD global name can vary between builds/versions. Try common ones.
+  const LivekitClient =
+    window.LivekitClient || window.Livekit || window.livekit;
   if (!LivekitClient) {
     console.error(
       "[Bridge] LiveKit SDK not found — was it loaded before bridge.js?"
@@ -104,10 +106,32 @@
     return;
   }
 
+  // Debug: log available exports to find Room
+  console.log(
+    "[Bridge] LiveKit SDK keys:",
+    Object.keys(LivekitClient).filter(
+      (k) => typeof LivekitClient[k] === "function"
+    ).join(", ")
+  );
+
+  // Room might be at different paths depending on the build
+  const RoomClass =
+    LivekitClient.Room ||
+    LivekitClient.default?.Room ||
+    (typeof LivekitClient.default === "function" ? LivekitClient.default : null);
+
+  if (!RoomClass) {
+    console.error("[Bridge] Could not find Room constructor in LiveKit SDK");
+    console.error("[Bridge] Available keys:", Object.keys(LivekitClient).join(", "));
+    sendStatus("ERROR", "Room constructor not found");
+    return;
+  }
+  console.log("[Bridge] Found Room constructor:", RoomClass.name || "anonymous");
+
   // ── Connect to LiveKit room ──────────────────────────────────────
   sendStatus("CONNECTING", "Connecting to LiveKit room...");
 
-  livekitRoom = new LivekitClient.Room({
+  livekitRoom = new RoomClass({
     adaptiveStream: false,
     dynacast: false,
   });
@@ -136,7 +160,7 @@
     try {
       await livekitRoom.localParticipant.publishTrack(capturedTrack, {
         name: "meet-capture",
-        source: LivekitClient.Track.Source.Microphone,
+        source: (LivekitClient.Track?.Source?.Microphone ?? "microphone"),
         dtx: false,
         red: false,
       });
@@ -171,7 +195,7 @@
 
   // ── Subscribe to agent audio from LiveKit ────────────────────────
   livekitRoom.on(
-    LivekitClient.RoomEvent.TrackSubscribed,
+    (LivekitClient.RoomEvent?.TrackSubscribed ?? "trackSubscribed"),
     (track, publication, participant) => {
       if (
         track.kind === "audio" &&
@@ -198,7 +222,7 @@
 
   // ── Echo cancellation: mute capture during agent speech ──────────
   livekitRoom.on(
-    LivekitClient.RoomEvent.DataReceived,
+    (LivekitClient.RoomEvent?.DataReceived ?? "dataReceived"),
     (payload, participant, kind, topic) => {
       if (topic === "agent_speaking") {
         try {
@@ -217,19 +241,45 @@
 
   sendStatus("CONNECTED", "Audio bridge active");
 
+  // ── Audio level monitor (debug) ───────────────────────────────
+  // Attach an AnalyserNode to the capture path so we can see if
+  // audio is actually flowing from Meet → mixer → LiveKit.
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 256;
+  captureGain.connect(analyser); // tap the signal after gain
+  const levelBuf = new Uint8Array(analyser.frequencyBinCount);
+
+  function getCaptureLevel() {
+    analyser.getByteTimeDomainData(levelBuf);
+    let peak = 0;
+    for (let i = 0; i < levelBuf.length; i++) {
+      const v = Math.abs(levelBuf[i] - 128);
+      if (v > peak) peak = v;
+    }
+    return peak; // 0 = silence, >5 = real audio
+  }
+
   // ── Health monitoring ────────────────────────────────────────────
   setInterval(() => {
+    const level = getCaptureLevel();
     const stats = {
       capturedTracks: connectedTrackIds.size,
+      audioLevel: level,
       audioContextState: audioContext.state,
       agentAudioContextState: agentDest.context.state,
       livekitState: livekitRoom.state,
     };
     console.log("[Bridge] Health:", JSON.stringify(stats));
-  }, 30000);
+    if (connectedTrackIds.size === 0) {
+      console.warn("[Bridge] ⚠ No audio tracks captured from Meet RTC!");
+    }
+    if (level === 0 && connectedTrackIds.size > 0) {
+      console.warn("[Bridge] ⚠ Tracks captured but audio level is 0 — audio may not be flowing");
+    }
+  }, 10000); // every 10s for faster debugging
 
   // ── Handle disconnection ─────────────────────────────────────────
-  livekitRoom.on(LivekitClient.RoomEvent.Disconnected, () => {
+  livekitRoom.on((LivekitClient.RoomEvent?.Disconnected ?? "disconnected"), () => {
     console.log("[Bridge] Disconnected from LiveKit room");
     sendStatus("DISCONNECTED", "LiveKit connection lost");
   });

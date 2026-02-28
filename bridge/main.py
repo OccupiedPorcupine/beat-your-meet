@@ -44,6 +44,24 @@ BRIDGE_INIT_JS_PATH = Path(__file__).resolve().parent / "bridge_init.js"
 BRIDGE_JS_PATH = Path(__file__).resolve().parent / "bridge.js"
 
 
+LIVEKIT_SDK_URL = "https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js"
+_livekit_sdk_cache: str | None = None
+
+
+async def _get_livekit_sdk() -> str:
+    """Fetch and cache the LiveKit client SDK source."""
+    global _livekit_sdk_cache
+    if _livekit_sdk_cache is not None:
+        return _livekit_sdk_cache
+
+    import urllib.request
+    logger.info(f"Downloading LiveKit SDK from {LIVEKIT_SDK_URL}...")
+    with urllib.request.urlopen(LIVEKIT_SDK_URL) as resp:
+        _livekit_sdk_cache = resp.read().decode("utf-8")
+    logger.info(f"LiveKit SDK downloaded ({len(_livekit_sdk_cache)} bytes)")
+    return _livekit_sdk_cache
+
+
 async def generate_bridge_token(room_name: str) -> str:
     """Generate a LiveKit token for the bridge participant."""
     token = api.AccessToken(
@@ -91,6 +109,10 @@ async def run_bridge(meet_url: str, room_name: str) -> None:
 
         page = context.pages[0] if context.pages else await context.new_page()
 
+        # Forward browser console logs to Python terminal
+        page.on("console", lambda msg: logger.info(f"[browser:{msg.type}] {msg.text}"))
+        page.on("pageerror", lambda err: logger.error(f"[browser:error] {err}"))
+
         try:
             bridge_config = {
                 "livekitUrl": livekit_url,
@@ -123,16 +145,28 @@ async def run_bridge(meet_url: str, room_name: str) -> None:
             # bridge.js connects to LiveKit and publishes the captured audio.
             logger.info("Injecting audio bridge script...")
 
-            # Load LiveKit SDK via Playwright's add_script_tag which uses CDP
-            # and bypasses Google Meet's Trusted Types CSP enforcement
+            # Load LiveKit SDK. Google Meet has an AMD loader (`define`)
+            # that hijacks UMD bundles. We fetch the source and wrap it in
+            # a closure that shadows `define` as undefined, forcing the UMD
+            # factory to use the global variable path instead.
             logger.info("Loading LiveKit SDK...")
-            await page.add_script_tag(
-                url="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js"
+            livekit_sdk_source = await _get_livekit_sdk()
+            wrapped_sdk = (
+                "(function(define) {\n"  # shadow define as undefined
+                f"{livekit_sdk_source}\n"
+                "})();\n"  # call with no args → define is undefined inside
             )
+            await page.add_script_tag(content=wrapped_sdk)
             await page.wait_for_function(
-                "typeof window.LivekitClient !== 'undefined'", timeout=10000
+                "typeof window.LivekitClient !== 'undefined' && typeof window.LivekitClient.Room === 'function'",
+                timeout=10000,
             )
             logger.info("LiveKit SDK loaded")
+
+            lk_keys = await page.evaluate(
+                "Object.keys(window.LivekitClient).filter(k => typeof window.LivekitClient[k] === 'function').slice(0, 15)"
+            )
+            logger.info(f"LiveKit SDK exports: {lk_keys}")
 
             # Inject bridge.js via add_script_tag (also bypasses Trusted Types)
             await page.add_script_tag(content=bridge_js_source)
