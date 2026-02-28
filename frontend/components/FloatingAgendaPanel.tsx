@@ -2,11 +2,12 @@
 
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import AgendaDisplay from "./AgendaDisplay";
+import type { AgendaState } from "./AgendaDisplay";
 
 interface FloatingAgendaPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  agendaState: any;
+  agendaState: AgendaState | null;
 }
 
 export default function FloatingAgendaPanel({
@@ -14,21 +15,23 @@ export default function FloatingAgendaPanel({
   onClose,
   agendaState,
 }: FloatingAgendaPanelProps) {
-  const [position, setPosition] = useState({ x: -1, y: 16 });
+  // null until the first client-side paint so the panel never flashes at a
+  // wrong position during SSR or hydration.
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(
+    null
+  );
   const [isDragging, setIsDragging] = useState(false);
   const dragOffset = useRef({ x: 0, y: 0 });
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Initialize default position to top-right on mount
+  // Set the correct initial position after mount (client-only)
   useEffect(() => {
-    if (position.x === -1 && typeof window !== "undefined") {
-      setPosition({ x: window.innerWidth - 336, y: 16 });
-    }
-  }, [position.x]);
+    setPosition({ x: window.innerWidth - 336, y: 16 });
+  }, []);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (!panelRef.current) return;
+      if (!panelRef.current || !position) return;
       setIsDragging(true);
       dragOffset.current = {
         x: e.clientX - position.x,
@@ -66,7 +69,7 @@ export default function FloatingAgendaPanel({
     setIsDragging(false);
   }, []);
 
-  if (!isOpen) return null;
+  if (!isOpen || position === null) return null;
 
   return (
     <div

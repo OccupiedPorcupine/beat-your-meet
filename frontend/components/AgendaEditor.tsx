@@ -24,32 +24,30 @@ export default function AgendaEditor({ agenda, onUpdate }: AgendaEditorProps) {
     0
   );
 
+  const withUpdatedItems = (items: AgendaItem[]): Agenda => ({
+    ...agenda,
+    items,
+  });
+
   const updateItem = (
     id: number,
     field: keyof AgendaItem,
     value: string | number
   ) => {
-    const updated = {
-      ...agenda,
-      items: agenda.items.map((item) =>
-        item.id === id ? { ...item, [field]: value } : item
-      ),
-    };
-    onUpdate(updated);
+    const newItems = agenda.items.map((item) =>
+      item.id === id ? { ...item, [field]: value } : item
+    );
+    onUpdate(withUpdatedItems(newItems));
   };
 
   const removeItem = (id: number) => {
-    onUpdate({
-      ...agenda,
-      items: agenda.items.filter((item) => item.id !== id),
-    });
+    onUpdate(withUpdatedItems(agenda.items.filter((item) => item.id !== id)));
   };
 
   const addItem = () => {
     const newId = Math.max(0, ...agenda.items.map((i) => i.id)) + 1;
-    onUpdate({
-      ...agenda,
-      items: [
+    onUpdate(
+      withUpdatedItems([
         ...agenda.items,
         {
           id: newId,
@@ -57,8 +55,8 @@ export default function AgendaEditor({ agenda, onUpdate }: AgendaEditorProps) {
           description: "",
           duration_minutes: 5,
         },
-      ],
-    });
+      ])
+    );
   };
 
   return (

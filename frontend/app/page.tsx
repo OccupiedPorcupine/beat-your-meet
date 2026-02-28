@@ -30,10 +30,12 @@ export default function Home() {
   );
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const generateAgenda = async () => {
     if (!description.trim()) return;
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch(`${SERVER_URL}/api/agenda`, {
         method: "POST",
@@ -43,12 +45,15 @@ export default function Home() {
           duration_minutes: duration,
         }),
       });
-      if (!res.ok) throw new Error("Failed to generate agenda");
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `Server error ${res.status}`);
+      }
       const data = await res.json();
       setAgenda(data);
     } catch (err) {
       console.error("Agenda generation failed:", err);
-      alert("Failed to generate agenda. Is the server running?");
+      setError(err instanceof Error ? err.message : "Failed to generate agenda");
     } finally {
       setLoading(false);
     }
@@ -57,18 +62,22 @@ export default function Home() {
   const createMeeting = async () => {
     if (!agenda) return;
     setCreating(true);
+    setError(null);
     try {
       const res = await fetch(`${SERVER_URL}/api/room`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agenda, style }),
       });
-      if (!res.ok) throw new Error("Failed to create room");
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `Server error ${res.status}`);
+      }
       const data = await res.json();
       router.push(`/room/${data.room_name}`);
     } catch (err) {
       console.error("Room creation failed:", err);
-      alert("Failed to create meeting room. Is the server running?");
+      setError(err instanceof Error ? err.message : "Failed to create meeting room");
     } finally {
       setCreating(false);
     }
@@ -82,6 +91,12 @@ export default function Home() {
           AI meeting facilitator that keeps your meetings on track
         </p>
       </div>
+
+      {error && (
+        <div className="mb-6 p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-400 text-sm">
+          <span className="font-medium">Error: </span>{error}
+        </div>
+      )}
 
       {!agenda ? (
         <div className="space-y-6">

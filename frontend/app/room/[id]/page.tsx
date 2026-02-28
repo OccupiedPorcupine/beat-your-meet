@@ -18,11 +18,16 @@ import { Track } from "livekit-client";
 import SmartParticipantTile from "@/components/SmartParticipantTile";
 import CustomControlBar from "@/components/CustomControlBar";
 import FloatingAgendaPanel from "@/components/FloatingAgendaPanel";
+import type { AgendaState } from "@/components/AgendaDisplay";
 
 const SERVER_URL =
   process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000";
-const LIVEKIT_URL =
-  process.env.NEXT_PUBLIC_LIVEKIT_URL || "wss://your-project.livekit.cloud";
+const LIVEKIT_URL = process.env.NEXT_PUBLIC_LIVEKIT_URL;
+if (!LIVEKIT_URL) {
+  throw new Error(
+    "NEXT_PUBLIC_LIVEKIT_URL is not set. Add it to your .env.local file."
+  );
+}
 
 async function fetchToken(
   roomName: string,
@@ -36,7 +41,10 @@ async function fetchToken(
       participant_name: participantName,
     }),
   });
-  if (!res.ok) throw new Error("Failed to get token");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? `Server error ${res.status}`);
+  }
   const data = await res.json();
   return data.token;
 }
@@ -114,7 +122,7 @@ export default function RoomPage() {
 }
 
 function MeetingRoom() {
-  const [agendaState, setAgendaState] = useState<any>(null);
+  const [agendaState, setAgendaState] = useState<AgendaState | null>(null);
   const [agendaPanelOpen, setAgendaPanelOpen] = useState(true);
 
   // Listen for agenda state updates from the agent via data channel

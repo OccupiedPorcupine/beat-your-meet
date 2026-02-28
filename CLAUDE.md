@@ -42,7 +42,7 @@ python main.py start # LiveKit agents CLI
 ```
 
 ### Environment
-Copy `.env.example` to `.env` and fill in all keys. The `.env` file lives at the project root and is loaded by both `server/` and `agent/` via `python-dotenv` with `../.env` path resolution. Required keys: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `MISTRAL_API_KEY`. Frontend uses `NEXT_PUBLIC_SERVER_URL` and `NEXT_PUBLIC_LIVEKIT_URL`.
+Copy `.env.example` to `.env` and fill in all keys. The `.env` file lives at the project root and is loaded by both `server/` and `agent/` via `python-dotenv` with `../.env` path resolution. Required keys: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DEEPGRAM_API_KEY`, `ELEVEN_API_KEY`, `MISTRAL_API_KEY`. Frontend uses `NEXT_PUBLIC_SERVER_URL` and `NEXT_PUBLIC_LIVEKIT_URL`.
 
 ## Key Design Decisions
 

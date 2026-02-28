@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,7 +9,10 @@ from livekit import api
 from mistralai import Mistral
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+# Resolve absolute path to .env so it works regardless of CWD or how Python
+# was invoked (e.g. `python main.py` vs `uvicorn main:app` from project root).
+_dotenv_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_dotenv_path)
 
 logger = logging.getLogger("beat-your-meet-server")
 logger.setLevel(logging.INFO)
@@ -18,7 +22,6 @@ app = FastAPI(title="Beat Your Meet API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -166,14 +169,15 @@ async def create_room(req: CreateRoomRequest):
             os.environ["LIVEKIT_API_KEY"],
             os.environ["LIVEKIT_API_SECRET"],
         )
-
-        await lk_api.room.create_room(
-            api.CreateRoomRequest(
-                name=room_name,
-                metadata=room_metadata,
+        try:
+            await lk_api.room.create_room(
+                api.CreateRoomRequest(
+                    name=room_name,
+                    metadata=room_metadata,
+                )
             )
-        )
-        await lk_api.aclose()
+        finally:
+            await lk_api.aclose()
     except KeyError as e:
         logger.error(f"Missing env var for room creation: {e}")
         raise HTTPException(status_code=500, detail=f"Server misconfigured: missing {e}")
