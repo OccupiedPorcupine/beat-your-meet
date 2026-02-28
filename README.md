@@ -94,6 +94,7 @@ The frontend runs on `http://localhost:3000`, the server on `http://localhost:80
 | `MISTRAL_API_KEY` | Mistral AI API key |
 | `DEEPGRAM_API_KEY` | Deepgram STT API key |
 | `ELEVENLABS_API_KEY` | ElevenLabs TTS API key |
+| `DETERMINISTIC_TIME_QUERIES` | Enable deterministic runtime answers for time-related questions (`true`/`false`, default: `true`) |
 | `NEXT_PUBLIC_SERVER_URL` | Backend URL for the frontend (default: `http://localhost:8000`) |
 | `NEXT_PUBLIC_LIVEKIT_URL` | LiveKit URL for the frontend |
 

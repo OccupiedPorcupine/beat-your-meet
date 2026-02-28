@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import datetime, timezone
 from enum import Enum
 from dataclasses import dataclass, field
 
@@ -255,6 +256,57 @@ class MeetingState:
             parts.append("\n".join(section))
         return "\n\n".join(parts)
 
+    def get_time_status(self, now: float | None = None) -> dict:
+        """Return a deterministic snapshot of meeting timing values.
+
+        `now` is accepted for deterministic tests; if omitted, current wall time
+        is used.
+        """
+        current_time = time.time() if now is None else now
+        current_time_iso = (
+            datetime.fromtimestamp(current_time, tz=timezone.utc)
+            .astimezone()
+            .isoformat(timespec="seconds")
+        )
+        item = self.current_item
+
+        if self.meeting_start_time is None:
+            return {
+                "meeting_started": False,
+                "current_time_iso": current_time_iso,
+                "total_meeting_minutes": 0.0,
+                "current_item_topic": item.topic if item else "none",
+                "current_item_elapsed_minutes": 0.0,
+                "current_item_remaining_minutes": 0.0,
+                "current_item_allocated_minutes": item.duration_minutes if item else 0.0,
+                "meeting_overtime_minutes": 0.0,
+            }
+
+        total_meeting_minutes = max(0.0, (current_time - self.meeting_start_time) / 60.0)
+        current_item_allocated_minutes = item.duration_minutes if item else 0.0
+        current_item_elapsed_minutes = (
+            max(0.0, (current_time - self.item_start_time) / 60.0)
+            if item and self.item_start_time is not None
+            else 0.0
+        )
+        current_item_remaining_minutes = max(
+            0.0, current_item_allocated_minutes - current_item_elapsed_minutes
+        )
+        active_item_overtime = max(
+            0.0, current_item_elapsed_minutes - current_item_allocated_minutes
+        )
+
+        return {
+            "meeting_started": True,
+            "current_time_iso": current_time_iso,
+            "total_meeting_minutes": total_meeting_minutes,
+            "current_item_topic": item.topic if item else "none",
+            "current_item_elapsed_minutes": current_item_elapsed_minutes,
+            "current_item_remaining_minutes": current_item_remaining_minutes,
+            "current_item_allocated_minutes": current_item_allocated_minutes,
+            "meeting_overtime_minutes": self.meeting_overtime + active_item_overtime,
+        }
+
     def get_context_for_prompt(self) -> dict:
         """Get current state formatted for Mistral prompts."""
         item = self.current_item
@@ -280,6 +332,7 @@ class MeetingState:
             "current_item": item.topic if item else "none",
             "allocated_minutes": item.duration_minutes if item else 0,
             "elapsed_minutes": self.elapsed_minutes,
+            "total_meeting_minutes": self.total_meeting_minutes,
             "remaining_items": ", ".join(i.topic for i in self.remaining_items) or "none",
             "meeting_overtime": self.meeting_overtime,
             "style": self.style,

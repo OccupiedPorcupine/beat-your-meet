@@ -10,13 +10,16 @@ import errno
 import json
 import logging
 import os
+import re
 import socket
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
+from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli, llm as lk_llm
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import deepgram, elevenlabs, openai, silero
 
@@ -45,6 +48,20 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 logger = logging.getLogger("beat-your-meet")
 logger.setLevel(logging.INFO)
+
+_TRUTHY = {"1", "true", "yes", "on"}
+_FALSEY = {"0", "false", "no", "off"}
+_TIME_QUERY_PATTERNS = (
+    re.compile(r"\bwhat(?:'s| is)?\s+time\b"),
+    re.compile(r"\bwhat(?:'s| is)?\s+the\s+time\b"),
+    re.compile(r"\bwhat\s+time\s+is\s+it\b"),
+    re.compile(r"\bhow\s+long\s+has\s+this\s+meeting\b"),
+    re.compile(r"\bhow\s+long\s+have\s+we\s+been\b"),
+    re.compile(r"\bhow\s+much\s+time(?:\s+is)?\s+left\b"),
+    re.compile(r"\btime\s+left\b"),
+    re.compile(r"\bremaining\s+time\b"),
+    re.compile(r"\bminutes?\s+left\b"),
+)
 
 
 def _resolve_agent_port() -> int:
@@ -76,6 +93,135 @@ def _is_port_in_use(port: int) -> bool:
             if exc.errno == errno.EADDRINUSE:
                 return True
             raise
+
+
+def _resolve_bool_env(name: str, default: bool) -> bool:
+    """Resolve a bool env var from common truthy/falsey strings."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+
+    normalized = raw.strip().lower()
+    if normalized in _TRUTHY:
+        return True
+    if normalized in _FALSEY:
+        return False
+
+    logger.warning(
+        "Invalid %s=%r; expected one of %s or %s. Defaulting to %s.",
+        name,
+        raw,
+        sorted(_TRUTHY),
+        sorted(_FALSEY),
+        default,
+    )
+    return default
+
+
+def _extract_latest_user_text(chat_ctx: lk_llm.ChatContext) -> str:
+    """Extract the most recent user text message from chat context."""
+    for item in reversed(chat_ctx.items):
+        if getattr(item, "type", None) != "message":
+            continue
+        if getattr(item, "role", None) != "user":
+            continue
+        text = getattr(item, "text_content", None)
+        if text:
+            return text
+    return ""
+
+
+def _is_time_query(text: str) -> bool:
+    """Return True if the utterance is a direct meeting-time question."""
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _TIME_QUERY_PATTERNS)
+
+
+def _format_duration_for_tts(minutes: float) -> str:
+    """Format minute float as concise speech-friendly duration text."""
+    total_seconds = max(0, int(round(minutes * 60)))
+    whole_minutes, seconds = divmod(total_seconds, 60)
+
+    if whole_minutes and seconds:
+        minute_word = "minute" if whole_minutes == 1 else "minutes"
+        second_word = "second" if seconds == 1 else "seconds"
+        return f"{whole_minutes} {minute_word} {seconds} {second_word}"
+    if whole_minutes:
+        minute_word = "minute" if whole_minutes == 1 else "minutes"
+        return f"{whole_minutes} {minute_word}"
+    second_word = "second" if seconds == 1 else "seconds"
+    return f"{seconds} {second_word}"
+
+
+def _format_time_status_for_tts(status: dict) -> str:
+    """Create a concise deterministic spoken response for time queries."""
+    if not status.get("meeting_started", False):
+        return "The meeting clock has not started yet."
+
+    clock_value = "unknown time"
+    current_time_iso = status.get("current_time_iso")
+    if isinstance(current_time_iso, str) and current_time_iso:
+        try:
+            dt = datetime.fromisoformat(current_time_iso)
+            clock_value = dt.strftime("%I:%M %p").lstrip("0")
+        except ValueError:
+            clock_value = current_time_iso
+
+    total_elapsed = _format_duration_for_tts(
+        float(status.get("total_meeting_minutes", 0.0))
+    )
+    remaining = _format_duration_for_tts(
+        float(status.get("current_item_remaining_minutes", 0.0))
+    )
+    topic = str(status.get("current_item_topic") or "the current item")
+    allocated = float(status.get("current_item_allocated_minutes", 0.0))
+
+    if topic == "none" or allocated <= 0:
+        return f"It's {clock_value}. The meeting has run for {total_elapsed}, and there is no active agenda item right now."
+
+    return (
+        f"It's {clock_value}. The meeting has run for {total_elapsed}, "
+        f"with {remaining} left on {topic}."
+    )
+
+
+class BeatFacilitatorAgent(Agent):
+    """Agent wrapper that serves deterministic time answers without LLM calls."""
+
+    def __init__(
+        self,
+        *,
+        meeting_state: MeetingState,
+        deterministic_time_queries_enabled: bool,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._meeting_state = meeting_state
+        self._deterministic_time_queries_enabled = deterministic_time_queries_enabled
+
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        latest_user_text = _extract_latest_user_text(chat_ctx)
+        is_time_query = _is_time_query(latest_user_text)
+
+        if is_time_query and self._deterministic_time_queries_enabled:
+            status = self._meeting_state.get_time_status()
+            logger.info(
+                "time_query_detected=true time_query_path=deterministic total_meeting_minutes=%.3f current_item_remaining_minutes=%.3f",
+                float(status.get("total_meeting_minutes", 0.0)),
+                float(status.get("current_item_remaining_minutes", 0.0)),
+            )
+            yield _format_time_status_for_tts(status)
+            return
+
+        if is_time_query:
+            logger.info("time_query_detected=true time_query_path=llm")
+        else:
+            logger.debug("time_query_detected=false")
+
+        async for chunk in super().llm_node(chat_ctx, tools, model_settings):
+            yield chunk
 
 
 async def entrypoint(ctx: JobContext):
@@ -131,10 +277,17 @@ async def entrypoint(ctx: JobContext):
             ),
             **ctx_data,
         )
+        deterministic_time_queries_enabled = _resolve_bool_env(
+            "DETERMINISTIC_TIME_QUERIES", default=True
+        )
+        logger.info(
+            "Deterministic time query path enabled=%s",
+            deterministic_time_queries_enabled,
+        )
 
         # Create the voice agent and session
         logger.info("Creating voice agent (VAD + STT + LLM + TTS)...")
-        agent = Agent(
+        agent = BeatFacilitatorAgent(
             instructions=instructions,
             vad=silero.VAD.load(),
             stt=deepgram.STT(model="nova-2", language="en"),
@@ -142,6 +295,8 @@ async def entrypoint(ctx: JobContext):
             tts=elevenlabs.TTS(
                 model="eleven_turbo_v2_5",
             ),
+            meeting_state=meeting_state,
+            deterministic_time_queries_enabled=deterministic_time_queries_enabled,
         )
 
         session = AgentSession()
@@ -161,12 +316,33 @@ async def entrypoint(ctx: JobContext):
                 logger.info("[gate] Silence signal set by %s", speaker)
             logger.info(f"[{speaker}] {event.transcript}")
 
+        @ctx.room.on("data_received")
+        def on_data_received(data: rtc.DataPacket):
+            # Any participant can change style during the meeting.
+            try:
+                msg = json.loads(data.data.decode())
+                if (
+                    msg.get("type") == "set_style"
+                    and msg.get("style") in ("gentle", "moderate", "aggressive")
+                ):
+                    meeting_state.style = msg["style"]
+                    logger.info(f"Style changed to {msg['style']}")
+                    asyncio.create_task(_refresh_agent_instructions(agent, meeting_state))
+            except Exception:
+                logger.exception("Failed to handle data_received")
+
         # Start the session
         logger.info("Starting agent session...")
         await session.start(agent, room=ctx.room)
 
         # Start the meeting
         meeting_state.start_meeting()
+        # Rebuild instructions now that the meeting clock is running.
+        # This prevents stale initial context such as "not started".
+        await _refresh_agent_instructions(
+            agent,
+            meeting_state,
+        )
 
         # Deliver bot introduction
         first_item = meeting_state.items[0] if meeting_state.items else None
@@ -183,9 +359,8 @@ async def entrypoint(ctx: JobContext):
 
         # Start the monitoring loop — store reference to prevent garbage collection
         logger.info("Starting monitoring loop...")
-        style_instructions = STYLE_INSTRUCTIONS.get(meeting_state.style, STYLE_INSTRUCTIONS["moderate"])
         _monitor_task = asyncio.create_task(
-            _monitoring_loop(session, ctx, meeting_state, agent, style_instructions)
+            _monitoring_loop(session, ctx, meeting_state, agent)
         )
 
         def _on_monitor_done(t: asyncio.Task) -> None:
@@ -246,16 +421,17 @@ async def _summarize_item(
 async def _refresh_agent_instructions(
     agent: Agent,
     state: MeetingState,
-    base_style_instructions: str,
 ):
     """Rebuild the facilitator system prompt and push it to the agent."""
     ctx_data = state.get_context_for_prompt()
     new_instructions = FACILITATOR_SYSTEM_PROMPT.format(
-        style_instructions=base_style_instructions,
+        style_instructions=STYLE_INSTRUCTIONS.get(
+            state.style, STYLE_INSTRUCTIONS["moderate"]
+        ),
         **ctx_data,
     )
     await agent.update_instructions(new_instructions)
-    logger.info("Agent instructions refreshed with updated meeting memory")
+    logger.info(f"Agent instructions refreshed (style={state.style})")
 
 
 async def _guarded_say(
@@ -286,7 +462,6 @@ async def _monitoring_loop(
     ctx: JobContext,
     state: MeetingState,
     agent: Agent,
-    style_instructions: str,
 ):
     """Periodically check if conversation is on-track and handle time transitions."""
 
@@ -364,7 +539,7 @@ async def _monitoring_loop(
                     transcript = state.get_item_transcript(prev_index)
                     notes = await _summarize_item(mistral_client, completed_item, transcript)
                     state.meeting_notes.append(notes)
-                    await _refresh_agent_instructions(agent, state, style_instructions)
+                    await _refresh_agent_instructions(agent, state)
 
                 await _send_agenda_state(ctx.room, state)
                 continue
@@ -390,6 +565,9 @@ async def _monitoring_loop(
                             )
                         except Exception:
                             logger.exception("Failed to deliver tangent intervention")
+
+            # Refresh LLM system prompt so time context never goes stale
+            await _refresh_agent_instructions(agent, state)
 
             # Send updated state to frontend
             await _send_agenda_state(ctx.room, state)
@@ -448,6 +626,7 @@ async def _check_tangent(
 
 async def _send_agenda_state(room: rtc.Room, state: MeetingState):
     """Send current agenda state to frontend via data channel."""
+    now_epoch = time.time()
     payload = json.dumps(
         {
             "type": "agenda_state",
@@ -465,6 +644,10 @@ async def _send_agenda_state(room: rtc.Room, state: MeetingState):
             "elapsed_minutes": state.elapsed_minutes,
             "meeting_overtime": state.meeting_overtime,
             "total_meeting_minutes": state.total_meeting_minutes,
+            "style": state.style,
+            "server_now_epoch": now_epoch,
+            "meeting_start_epoch": state.meeting_start_time,
+            "item_start_epoch": state.item_start_time,
             "meeting_notes": [
                 {
                     "item_id": n.item_id,

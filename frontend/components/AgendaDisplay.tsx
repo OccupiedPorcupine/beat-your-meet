@@ -24,6 +24,7 @@ export interface AgendaState {
   elapsed_minutes: number;
   meeting_overtime: number;
   total_meeting_minutes: number;
+  style?: string;
   meeting_notes?: ItemNotes[];
 }
 
