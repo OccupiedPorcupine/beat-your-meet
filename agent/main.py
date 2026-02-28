@@ -14,7 +14,7 @@ import time
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli, llm
-from livekit.agents.voice import VoicePipelineAgent
+from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import deepgram, elevenlabs, openai, silero
 
 from monitor import MeetingState, ItemState
@@ -35,102 +35,115 @@ logger.setLevel(logging.INFO)
 
 
 async def entrypoint(ctx: JobContext):
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    try:
+        logger.info("Connecting to room...")
+        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
-    # Wait for the first human participant to join
-    participant = await ctx.wait_for_participant()
-    logger.info(f"Participant joined: {participant.identity}")
+        # Wait for the first human participant to join
+        logger.info("Waiting for participant...")
+        participant = await ctx.wait_for_participant()
+        logger.info(f"Participant joined: {participant.identity}")
 
-    # Parse room metadata for agenda and style
-    room_metadata = ctx.room.metadata
-    if room_metadata:
-        metadata = json.loads(room_metadata)
-    else:
-        # Fallback: no agenda configured, use defaults
-        metadata = {
-            "agenda": {
-                "title": "Meeting",
-                "items": [
-                    {
-                        "id": 1,
-                        "topic": "Open Discussion",
-                        "description": "General discussion",
-                        "duration_minutes": 30,
-                    }
-                ],
-            },
-            "style": "moderate",
-        }
+        # Parse room metadata for agenda and style
+        logger.info("Parsing room metadata...")
+        room_metadata = ctx.room.metadata
+        if room_metadata:
+            metadata = json.loads(room_metadata)
+        else:
+            # Fallback: no agenda configured, use defaults
+            metadata = {
+                "agenda": {
+                    "title": "Meeting",
+                    "items": [
+                        {
+                            "id": 1,
+                            "topic": "Open Discussion",
+                            "description": "General discussion",
+                            "duration_minutes": 30,
+                        }
+                    ],
+                },
+                "style": "moderate",
+            }
 
-    # Initialize meeting state
-    meeting_state = MeetingState.from_metadata(metadata)
+        # Initialize meeting state
+        meeting_state = MeetingState.from_metadata(metadata)
+        logger.info(
+            f"Meeting state initialized: {len(meeting_state.items)} items, style={meeting_state.style}"
+        )
 
-    # Configure LLM (Mistral via OpenAI-compatible interface)
-    mistral_llm = openai.LLM(
-        model="mistral-large-latest",
-        api_key=os.environ["MISTRAL_API_KEY"],
-        base_url="https://api.mistral.ai/v1",
-    )
+        # Configure LLM (Mistral via OpenAI-compatible interface)
+        mistral_llm = openai.LLM(
+            model="mistral-large-latest",
+            api_key=os.environ["MISTRAL_API_KEY"],
+            base_url="https://api.mistral.ai/v1",
+        )
 
-    # Build initial chat context
-    chat_ctx = llm.ChatContext()
-    ctx_data = meeting_state.get_context_for_prompt()
-    chat_ctx.append(
-        role="system",
-        text=FACILITATOR_SYSTEM_PROMPT.format(
+        # Build system instructions
+        ctx_data = meeting_state.get_context_for_prompt()
+        instructions = FACILITATOR_SYSTEM_PROMPT.format(
             style_instructions=STYLE_INSTRUCTIONS.get(
                 meeting_state.style, STYLE_INSTRUCTIONS["moderate"]
             ),
             **ctx_data,
-        ),
-    )
+        )
 
-    # Create the voice pipeline agent
-    agent = VoicePipelineAgent(
-        vad=silero.VAD.load(),
-        stt=deepgram.STT(model="nova-2", language="en"),
-        llm=mistral_llm,
-        tts=elevenlabs.TTS(
-            model_id="eleven_turbo_v2_5",
-        ),
-        chat_ctx=chat_ctx,
-    )
+        # Create the voice agent and session
+        logger.info("Creating voice agent (VAD + STT + LLM + TTS)...")
+        agent = Agent(
+            instructions=instructions,
+            vad=silero.VAD.load(),
+            stt=deepgram.STT(model="nova-2", language="en"),
+            llm=mistral_llm,
+            tts=elevenlabs.TTS(
+                model="eleven_turbo_v2_5",
+            ),
+        )
 
-    # Track transcriptions for monitoring
-    @agent.on("user_speech_committed")
-    def on_speech(msg):
-        text = msg.content if hasattr(msg, "content") else str(msg)
-        speaker = participant.identity
-        meeting_state.add_transcript(speaker, text)
-        logger.info(f"[{speaker}] {text}")
+        session = AgentSession()
 
-    # Start the agent
-    agent.start(ctx.room, participant)
+        # Track transcriptions for monitoring
+        @session.on("user_input_transcribed")
+        def on_speech(event):
+            if not event.is_final:
+                return
+            speaker = participant.identity
+            meeting_state.add_transcript(speaker, event.transcript)
+            logger.info(f"[{speaker}] {event.transcript}")
 
-    # Start the meeting
-    meeting_state.start_meeting()
+        # Start the session
+        logger.info("Starting agent session...")
+        await session.start(agent, room=ctx.room)
 
-    # Deliver bot introduction
-    first_item = meeting_state.items[0] if meeting_state.items else None
-    intro = BOT_INTRO_TEMPLATE.format(
-        num_items=len(meeting_state.items),
-        total_minutes=int(meeting_state.total_scheduled_minutes),
-        first_item=first_item.topic if first_item else "the discussion",
-    )
-    await asyncio.sleep(2)  # Brief pause before intro
-    await agent.say(intro, allow_interruptions=True)
+        # Start the meeting
+        meeting_state.start_meeting()
 
-    # Send initial agenda state to frontend via data channel
-    await _send_agenda_state(ctx.room, meeting_state)
+        # Deliver bot introduction
+        first_item = meeting_state.items[0] if meeting_state.items else None
+        intro = BOT_INTRO_TEMPLATE.format(
+            num_items=len(meeting_state.items),
+            total_minutes=int(meeting_state.total_scheduled_minutes),
+            first_item=first_item.topic if first_item else "the discussion",
+        )
+        await asyncio.sleep(2)  # Brief pause before intro
+        await session.say(intro, allow_interruptions=True)
 
-    # Start the monitoring loop
-    asyncio.create_task(_monitoring_loop(agent, ctx, meeting_state))
+        # Send initial agenda state to frontend via data channel
+        await _send_agenda_state(ctx.room, meeting_state)
 
-    logger.info("Beat Your Meet agent started successfully")
+        # Start the monitoring loop
+        logger.info("Starting monitoring loop...")
+        asyncio.create_task(_monitoring_loop(session, ctx, meeting_state))
+
+        logger.info("Beat Your Meet agent started successfully")
+
+    except Exception:
+        logger.exception("Agent entrypoint crashed")
+        raise
 
 
 async def _monitoring_loop(
-    agent: VoicePipelineAgent,
+    session: AgentSession,
     ctx: JobContext,
     state: MeetingState,
 ):
@@ -146,57 +159,73 @@ async def _monitoring_loop(
     while True:
         await asyncio.sleep(check_interval)
 
-        # Check if meeting is over (no more items)
-        if state.current_item is None:
-            await agent.say(
-                "That wraps up our agenda. Great meeting, everyone!",
-                allow_interruptions=True,
-            )
-            break
+        try:
+            # Check if meeting is over (no more items)
+            if state.current_item is None:
+                try:
+                    await session.say(
+                        "That wraps up our agenda. Great meeting, everyone!",
+                        allow_interruptions=True,
+                    )
+                except Exception:
+                    logger.exception("Failed to deliver meeting wrap-up")
+                break
 
-        # Check time-based state transitions
-        new_state = state.check_time_state()
+            # Check time-based state transitions
+            new_state = state.check_time_state()
 
-        if new_state == ItemState.WARNING:
-            remaining = max(
-                0,
-                state.current_item.duration_minutes - state.elapsed_minutes,
-            )
-            warning = TIME_WARNING_TEMPLATE.format(
-                remaining=f"{remaining:.0f}",
-                topic=state.current_item.topic,
-            )
-            if state.can_intervene():
-                await agent.say(warning, allow_interruptions=True)
-                state.record_intervention()
-
-        elif new_state == ItemState.OVERTIME:
-            # Auto-advance to next item
-            next_item = state.advance_to_next()
-            if next_item:
-                transition = AGENDA_TRANSITION_TEMPLATE.format(
-                    next_item=next_item.topic,
-                    duration=int(next_item.duration_minutes),
+            if new_state == ItemState.WARNING:
+                remaining = max(
+                    0,
+                    state.current_item.duration_minutes - state.elapsed_minutes,
                 )
-                await agent.say(transition, allow_interruptions=True)
-                state.record_intervention()
+                warning = TIME_WARNING_TEMPLATE.format(
+                    remaining=f"{remaining:.0f}",
+                    topic=state.current_item.topic,
+                )
+                if state.can_intervene():
+                    try:
+                        await session.say(warning, allow_interruptions=True)
+                        state.record_intervention()
+                    except Exception:
+                        logger.exception("Failed to deliver time warning")
+
+            elif new_state == ItemState.OVERTIME:
+                # Auto-advance to next item
+                next_item = state.advance_to_next()
+                if next_item:
+                    transition = AGENDA_TRANSITION_TEMPLATE.format(
+                        next_item=next_item.topic,
+                        duration=int(next_item.duration_minutes),
+                    )
+                    try:
+                        await session.say(transition, allow_interruptions=True)
+                        state.record_intervention()
+                    except Exception:
+                        logger.exception("Failed to deliver agenda transition")
+                await _send_agenda_state(ctx.room, state)
+                continue
+
+            # Check for tangent detection (only if we have transcript and can intervene)
+            transcript = state.get_recent_transcript(seconds=60)
+            if transcript and state.can_intervene() and not state.is_in_override_grace():
+                assessment = await _check_tangent(
+                    mistral_client, state, transcript
+                )
+                if assessment and assessment.get("should_speak"):
+                    spoken = assessment.get("spoken_response", "")
+                    if spoken:
+                        try:
+                            await session.say(spoken, allow_interruptions=True)
+                            state.record_intervention()
+                        except Exception:
+                            logger.exception("Failed to deliver tangent intervention")
+
+            # Send updated state to frontend
             await _send_agenda_state(ctx.room, state)
-            continue
 
-        # Check for tangent detection (only if we have transcript and can intervene)
-        transcript = state.get_recent_transcript(seconds=60)
-        if transcript and state.can_intervene() and not state.is_in_override_grace():
-            assessment = await _check_tangent(
-                mistral_client, state, transcript
-            )
-            if assessment and assessment.get("should_speak"):
-                spoken = assessment.get("spoken_response", "")
-                if spoken:
-                    await agent.say(spoken, allow_interruptions=True)
-                    state.record_intervention()
-
-        # Send updated state to frontend
-        await _send_agenda_state(ctx.room, state)
+        except Exception:
+            logger.exception("Monitoring loop iteration failed")
 
 
 async def _check_tangent(

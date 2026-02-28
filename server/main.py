@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 from fastapi import FastAPI, HTTPException
@@ -8,6 +9,9 @@ from mistralai import Mistral
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+logger = logging.getLogger("beat-your-meet-server")
+logger.setLevel(logging.INFO)
 
 app = FastAPI(title="Beat Your Meet API")
 
@@ -45,19 +49,26 @@ class CreateRoomRequest(BaseModel):
 
 @app.post("/api/token")
 async def generate_token(req: TokenRequest):
-    token = api.AccessToken(
-        os.environ["LIVEKIT_API_KEY"],
-        os.environ["LIVEKIT_API_SECRET"],
-    )
-    token.with_identity(req.participant_name)
-    token.with_name(req.participant_name)
-    token.with_grants(
-        api.VideoGrants(
-            room_join=True,
-            room=req.room_name,
+    try:
+        token = api.AccessToken(
+            os.environ["LIVEKIT_API_KEY"],
+            os.environ["LIVEKIT_API_SECRET"],
         )
-    )
-    return {"token": token.to_jwt()}
+        token.with_identity(req.participant_name)
+        token.with_name(req.participant_name)
+        token.with_grants(
+            api.VideoGrants(
+                room_join=True,
+                room=req.room_name,
+            )
+        )
+        return {"token": token.to_jwt()}
+    except KeyError as e:
+        logger.error(f"Missing env var for token generation: {e}")
+        raise HTTPException(status_code=500, detail=f"Server misconfigured: missing {e}")
+    except Exception as e:
+        logger.exception("Token generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Agenda Generation ────────────────────────────────────────────────
@@ -98,28 +109,35 @@ async def generate_agenda(req: AgendaRequest):
     if not os.environ.get("MISTRAL_API_KEY"):
         raise HTTPException(status_code=500, detail="MISTRAL_API_KEY not configured")
 
-    response = await mistral_client.chat.complete_async(
-        model="mistral-large-latest",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a meeting planning assistant. Generate structured agendas in JSON format. Only output valid JSON.",
-            },
-            {
-                "role": "user",
-                "content": AGENDA_GENERATION_PROMPT.format(
-                    description=req.description,
-                    duration_minutes=req.duration_minutes,
-                ),
-            },
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.3,
-        max_tokens=1024,
-    )
+    try:
+        response = await mistral_client.chat.complete_async(
+            model="mistral-large-latest",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a meeting planning assistant. Generate structured agendas in JSON format. Only output valid JSON.",
+                },
+                {
+                    "role": "user",
+                    "content": AGENDA_GENERATION_PROMPT.format(
+                        description=req.description,
+                        duration_minutes=req.duration_minutes,
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=1024,
+        )
 
-    agenda = json.loads(response.choices[0].message.content)
-    return agenda
+        agenda = json.loads(response.choices[0].message.content)
+        return agenda
+    except json.JSONDecodeError as e:
+        logger.error(f"Mistral returned invalid JSON for agenda: {e}")
+        raise HTTPException(status_code=502, detail="LLM returned invalid JSON")
+    except Exception as e:
+        logger.exception("Agenda generation failed")
+        raise HTTPException(status_code=502, detail=f"Agenda generation failed: {e}")
 
 
 # ── Room Creation ────────────────────────────────────────────────────
@@ -139,20 +157,28 @@ async def create_room(req: CreateRoomRequest):
         }
     )
 
-    lk_api = api.LiveKitAPI(
-        os.environ["LIVEKIT_URL"],
-        os.environ["LIVEKIT_API_KEY"],
-        os.environ["LIVEKIT_API_SECRET"],
-    )
-
-    await lk_api.room.create_room(
-        api.CreateRoomRequest(
-            name=room_name,
-            metadata=room_metadata,
+    try:
+        lk_api = api.LiveKitAPI(
+            os.environ["LIVEKIT_URL"],
+            os.environ["LIVEKIT_API_KEY"],
+            os.environ["LIVEKIT_API_SECRET"],
         )
-    )
-    await lk_api.aclose()
 
+        await lk_api.room.create_room(
+            api.CreateRoomRequest(
+                name=room_name,
+                metadata=room_metadata,
+            )
+        )
+        await lk_api.aclose()
+    except KeyError as e:
+        logger.error(f"Missing env var for room creation: {e}")
+        raise HTTPException(status_code=500, detail=f"Server misconfigured: missing {e}")
+    except Exception as e:
+        logger.exception("Room creation failed")
+        raise HTTPException(status_code=502, detail=f"Failed to create LiveKit room: {e}")
+
+    logger.info(f"Created room: {room_name}")
     return {"room_name": room_name}
 
 
