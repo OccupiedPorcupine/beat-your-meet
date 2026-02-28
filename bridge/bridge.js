@@ -115,20 +115,10 @@
     return originalGetUserMedia(constraints);
   };
 
-  // ── Load LiveKit SDK ─────────────────────────────────────────────
-  sendStatus("STARTING", "Loading LiveKit SDK...");
-
-  await new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js";
-    script.onload = resolve;
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-
+  // ── LiveKit SDK (loaded by Playwright's add_script_tag before this runs) ──
   const LivekitClient = window.LivekitClient;
   if (!LivekitClient) {
-    console.error("[Bridge] LiveKit SDK failed to load");
+    console.error("[Bridge] LiveKit SDK not found on window — was it loaded before bridge.js?");
     sendStatus("ERROR", "LiveKit SDK not available");
     return;
   }

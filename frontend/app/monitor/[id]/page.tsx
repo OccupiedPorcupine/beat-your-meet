@@ -78,6 +78,29 @@ export default function MonitorPage() {
     }
   };
 
+  const [reconnecting, setReconnecting] = useState(false);
+
+  const handleReconnect = async () => {
+    setReconnecting(true);
+    try {
+      const res = await fetch(`${SERVER_URL}/api/bridge-restart/${roomName}`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+        throw new Error(err.detail || "Failed to restart bridge");
+      }
+      setBridgeStatus({ ...bridgeStatus, status: "STARTING" });
+    } catch (err) {
+      console.error("Failed to reconnect bridge:", err);
+      alert(
+        err instanceof Error ? err.message : "Failed to reconnect bridge"
+      );
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
   if (error) {
     return (
       <main className="max-w-2xl mx-auto px-4 py-12 text-center">
@@ -111,6 +134,8 @@ export default function MonitorPage() {
         roomName={roomName}
         bridgeStatus={bridgeStatus}
         onStop={handleStop}
+        onReconnect={handleReconnect}
+        reconnecting={reconnecting}
       />
     </LiveKitRoom>
   );
@@ -120,10 +145,14 @@ function MonitorDashboard({
   roomName,
   bridgeStatus,
   onStop,
+  onReconnect,
+  reconnecting,
 }: {
   roomName: string;
   bridgeStatus: { status: string; meet_url?: string };
   onStop: () => void;
+  onReconnect: () => void;
+  reconnecting: boolean;
 }) {
   const [agendaState, setAgendaState] = useState<any>(null);
   const [liveBridgeStatus, setLiveBridgeStatus] = useState<{
@@ -209,13 +238,26 @@ function MonitorDashboard({
           </div>
         )}
 
-        {/* Stop button */}
-        <button
-          onClick={onStop}
-          className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
-        >
-          Stop Bridge
-        </button>
+        {/* Action buttons */}
+        <div className="flex gap-3">
+          {displayStatus.status === "DISCONNECTED" && (
+            <button
+              onClick={onReconnect}
+              disabled={reconnecting}
+              className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-lg transition-colors"
+            >
+              {reconnecting ? "Reconnecting..." : "Reconnect Bridge"}
+            </button>
+          )}
+          <button
+            onClick={onStop}
+            className={`${
+              displayStatus.status === "DISCONNECTED" ? "flex-1" : "w-full"
+            } py-3 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors`}
+          >
+            {displayStatus.status === "DISCONNECTED" ? "Back to Home" : "Stop Bridge"}
+          </button>
+        </div>
       </div>
     </main>
   );

@@ -84,6 +84,7 @@ async def run_bridge(meet_url: str, room_name: str) -> None:
                 "--no-default-browser-check",
             ],
             ignore_default_args=["--mute-audio", "--enable-automation"],
+            bypass_csp=True,
             viewport={"width": 1280, "height": 720},
         )
 
@@ -120,7 +121,20 @@ async def run_bridge(meet_url: str, room_name: str) -> None:
             # Now inject bridge.js (after joining, so Meet's RTCPeerConnections
             # are already created and our override has captured their tracks)
             logger.info("Injecting audio bridge script...")
-            await page.evaluate(bridge_js_source)
+
+            # Load LiveKit SDK via Playwright's add_script_tag which uses CDP
+            # and bypasses Google Meet's Trusted Types CSP enforcement
+            logger.info("Loading LiveKit SDK...")
+            await page.add_script_tag(
+                url="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js"
+            )
+            await page.wait_for_function(
+                "typeof window.LivekitClient !== 'undefined'", timeout=10000
+            )
+            logger.info("LiveKit SDK loaded")
+
+            # Inject bridge.js via add_script_tag (also bypasses Trusted Types)
+            await page.add_script_tag(content=bridge_js_source)
 
             logger.info("Bridge is active — monitoring meeting...")
 

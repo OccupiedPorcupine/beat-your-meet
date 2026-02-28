@@ -241,11 +241,15 @@ async def join_google_meet(req: GoogleMeetRequest):
         raise HTTPException(status_code=502, detail=f"Failed to create LiveKit room: {e}")
 
     # Spawn bridge subprocess
-    bridge_script = os.path.join(os.path.dirname(__file__), "..", "bridge", "main.py")
+    bridge_dir = os.path.join(os.path.dirname(__file__), "..", "bridge")
+    bridge_script = os.path.join(bridge_dir, "main.py")
+    bridge_python = os.path.join(bridge_dir, ".venv", "bin", "python")
+    if not os.path.exists(bridge_python):
+        bridge_python = "python"  # fallback to system python
     try:
         process = subprocess.Popen(
             [
-                "python",
+                bridge_python,
                 bridge_script,
                 "--meet-url",
                 req.meet_url,
@@ -303,6 +307,56 @@ async def stop_bridge(room_name: str):
 
     del _bridge_processes[room_name]
     return {"status": "stopped"}
+
+
+@app.post("/api/bridge-restart/{room_name}")
+async def restart_bridge(room_name: str):
+    bridge = _bridge_processes.get(room_name)
+    if not bridge:
+        raise HTTPException(status_code=404, detail="No bridge found for this room")
+
+    meet_url = bridge.get("meet_url")
+    if not meet_url:
+        raise HTTPException(status_code=400, detail="No Meet URL stored for this bridge")
+
+    # Kill old process if still running
+    process = bridge["process"]
+    if process.poll() is None:
+        process.terminate()
+        logger.info(f"Terminated old bridge process (PID {process.pid}) for room {room_name}")
+
+    # Spawn a new bridge process
+    bridge_dir = os.path.join(os.path.dirname(__file__), "..", "bridge")
+    bridge_script = os.path.join(bridge_dir, "main.py")
+    bridge_python = os.path.join(bridge_dir, ".venv", "bin", "python")
+    if not os.path.exists(bridge_python):
+        bridge_python = "python"
+
+    try:
+        new_process = subprocess.Popen(
+            [
+                bridge_python,
+                bridge_script,
+                "--meet-url",
+                meet_url,
+                "--room-name",
+                room_name,
+            ],
+            env={**os.environ},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        _bridge_processes[room_name] = {
+            "process": new_process,
+            "status": "STARTING",
+            "meet_url": meet_url,
+        }
+        logger.info(f"Restarted bridge process (PID {new_process.pid}) for room {room_name}")
+    except Exception as e:
+        logger.exception("Failed to restart bridge process")
+        raise HTTPException(status_code=500, detail=f"Failed to restart bridge: {e}")
+
+    return {"status": "restarting"}
 
 
 # ── Health Check ─────────────────────────────────────────────────────
