@@ -31,6 +31,7 @@ export default function SetupMeeting() {
   const [style, setStyle] = useState<"gentle" | "moderate" | "chatting">(
     "moderate"
   );
+  const [inviteBot, setInviteBot] = useState(true);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,13 +80,16 @@ export default function SetupMeeting() {
       const res = await fetch(`${SERVER_URL}/api/room`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agenda, style }),
+        body: JSON.stringify({ agenda, style, invite_bot: inviteBot }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.detail ?? `Server error ${res.status}`);
       }
       const data = await res.json();
+      if (data.host_token) {
+        sessionStorage.setItem(`host_token_${data.room_name}`, data.host_token);
+      }
       setCreatedRoom({ roomName: data.room_name, accessCode: data.access_code });
     } catch (err) {
       console.error("Room creation failed:", err);
@@ -324,6 +328,29 @@ export default function SetupMeeting() {
               <AgendaEditor agenda={agenda} onUpdate={setAgenda} />
 
               <StyleSelector style={style} onSelect={setStyle} />
+
+              {/* Invite Facilitator toggle */}
+              <div className="flex items-center justify-between rounded-xl border border-white/15 bg-white/10 px-4 py-3">
+                <div>
+                  <span className="text-sm font-medium text-slate-100">Invite Facilitator</span>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {inviteBot ? "Bot will join when the meeting starts" : "You can invite the bot later"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInviteBot(!inviteBot)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    inviteBot ? "bg-[#ff7a18]/60" : "bg-white/20"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      inviteBot ? "translate-x-6" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
 
               <button
                 onClick={createMeeting}
