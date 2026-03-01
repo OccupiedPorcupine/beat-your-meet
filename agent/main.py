@@ -19,7 +19,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli, llm as lk_llm
+from livekit.agents import AutoSubscribe, JobContext, RunContext, WorkerOptions, cli, function_tool, llm as lk_llm
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import deepgram, elevenlabs, openai, silero
 
@@ -242,6 +242,11 @@ class BeatFacilitatorAgent(Agent):
         self._meeting_state = meeting_state
         self._deterministic_time_queries_enabled = deterministic_time_queries_enabled
         self._room = room
+        logger.info(
+            "BeatFacilitatorAgent registered %d tools: %s",
+            len(self.tools),
+            [t.id for t in self.tools],
+        )
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         latest_user_text = _extract_latest_user_text(chat_ctx)
@@ -292,6 +297,92 @@ class BeatFacilitatorAgent(Agent):
 
         async for chunk in super().llm_node(chat_ctx, tools, model_settings):
             yield chunk
+
+    # ------------------------------------------------------------------
+    # Function tools — auto-discovered by LiveKit and exposed to the LLM
+    # ------------------------------------------------------------------
+
+    @function_tool()
+    async def get_participant_count(self, context: RunContext) -> dict:
+        """Get the current number of participants in the meeting room.
+
+        Use this when someone asks how many people are in the meeting,
+        who is here, or anything about attendance.
+        """
+        if not self._room:
+            return {"participant_count": 0, "participants": []}
+        participants = list(self._room.remote_participants.values())
+        return {
+            "participant_count": len(participants),
+            "participants": [p.identity for p in participants],
+        }
+
+    @function_tool()
+    async def get_meeting_info(self, context: RunContext) -> dict:
+        """Get current meeting status including timing and progress.
+
+        Use this when someone asks about meeting progress, how long the meeting
+        has been running, what topic is being discussed, or the meeting style.
+        """
+        state = self._meeting_state
+        item = state.current_item
+        return {
+            "agenda_title": state.agenda_title,
+            "style": state.style,
+            "current_item": item.topic if item else None,
+            "current_item_description": item.description if item else None,
+            "current_item_elapsed_minutes": round(state.elapsed_minutes, 1),
+            "current_item_allocated_minutes": item.duration_minutes if item else 0,
+            "total_meeting_minutes": round(state.total_meeting_minutes, 1),
+            "total_scheduled_minutes": round(state.total_scheduled_minutes, 1),
+            "meeting_overtime_minutes": round(state.meeting_overtime, 1),
+            "items_completed": sum(1 for i in state.items if i.state == ItemState.COMPLETED),
+            "items_remaining": len(state.remaining_items),
+            "total_items": len(state.items),
+        }
+
+    @function_tool()
+    async def get_agenda(self, context: RunContext) -> dict:
+        """Get the full meeting agenda with all items and their current status.
+
+        Use this when someone asks what's on the agenda, what topics are planned,
+        or wants an overview of the meeting structure.
+        """
+        state = self._meeting_state
+        return {
+            "title": state.agenda_title,
+            "items": [
+                {
+                    "id": item.id,
+                    "topic": item.topic,
+                    "description": item.description,
+                    "duration_minutes": item.duration_minutes,
+                    "state": item.state.value,
+                    "actual_elapsed_minutes": round(item.actual_elapsed, 1),
+                }
+                for item in state.items
+            ],
+        }
+
+    @function_tool()
+    async def get_meeting_notes(self, context: RunContext) -> dict:
+        """Get notes and summaries from completed agenda items.
+
+        Use this when someone asks for a recap, summary, what was discussed,
+        decisions made, or action items from earlier in the meeting.
+        """
+        state = self._meeting_state
+        return {
+            "notes": [
+                {
+                    "topic": n.topic,
+                    "key_points": n.key_points,
+                    "decisions": n.decisions,
+                    "action_items": n.action_items,
+                }
+                for n in state.meeting_notes
+            ],
+        }
 
 
 async def entrypoint(ctx: JobContext):

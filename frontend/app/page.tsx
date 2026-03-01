@@ -175,12 +175,12 @@ export default function Home() {
           <p className="hero-kicker">- BEATYOURMEET AI</p>
           <h1 className="hero-title">BEATYOURMEET AI</h1>
           <p className="hero-subtitle">
-            THE AUTONOMOUS MULTI-AGENT MEETING ORCHESTRATION
+            THE AI MEETING FACILITATOR THAT KEEPS YOU ON TRACK
           </p>
           <p className="hero-meta">
-            Live meeting facilitation
+            Voice-first meeting facilitation
             <br />
-            Agenda guardrails, tangent recovery, and action capture
+            Agenda guardrails, tangent recovery, and time-box awareness
           </p>
         </div>
 
