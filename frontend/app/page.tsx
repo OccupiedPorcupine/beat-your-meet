@@ -189,7 +189,7 @@ export default function Home() {
             <div className="primitive-glow" />
             <div className="geo-stage">
               <div className="geo-primitive">
-                <span className="geo-face face-front" />
+                <span className="geo-face face-front"><span className="mac-face">=)</span></span>
                 <span className="geo-face face-back" />
                 <span className="geo-face face-left" />
                 <span className="geo-face face-right" />

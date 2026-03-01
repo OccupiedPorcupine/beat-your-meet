@@ -196,6 +196,7 @@ h1, h2, h3, .hero-kicker {
   aspect-ratio: 1;
   animation: idle-float 7.4s ease-in-out infinite;
   transform-style: preserve-3d;
+  will-change: transform;
 }
 
 /* Ambient bloom behind the cube */
@@ -205,10 +206,10 @@ h1, h2, h3, .hero-kicker {
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    rgba(255, 180, 80, 0.28)  0%,
-    rgba(155, 45, 202, 0.16)  42%,
-    rgba(6, 214, 247, 0.08)   65%,
-    transparent               80%
+    rgba(232, 228, 218, 0.32)  0%,
+    rgba(200, 196, 186, 0.16)  42%,
+    rgba(160, 156, 148, 0.06)  65%,
+    transparent                80%
   );
   filter: blur(20px);
   animation: glow-pulse 5.6s ease-in-out infinite;
@@ -224,8 +225,9 @@ h1, h2, h3, .hero-kicker {
   display: grid;
   place-items: center;
   transform-style: preserve-3d;
-  perspective: 680px;          /* tighter = more dramatic depth */
+  perspective: 680px;
   animation: primitive-spin 22s linear infinite;
+  will-change: transform;
 }
 
 /* Fixed cube size so translateZ = half-width = true cube proportions */
@@ -234,105 +236,120 @@ h1, h2, h3, .hero-kicker {
   width: 264px;
   height: 264px;
   transform-style: preserve-3d;
-  animation: primitive-rock 9s ease-in-out infinite;
+  animation: primitive-breathe 8s ease-in-out infinite;
+  will-change: transform;
 }
 
-/* ── Shared face base ── no clip-path, no morphing */
+/* ── Shared face base ── */
 .geo-face {
   position: absolute;
   inset: 0;
   border-radius: 10%;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid rgba(148, 140, 128, 0.50);
 }
 
-/* ── Front face — bright, full-colour, faces the viewer ── */
+/* ── Front face — Macintosh CRT face ── */
 .face-front {
   transform: translateZ(132px);
-  background:
-    radial-gradient(ellipse 60% 55% at 34% 26%, rgba(255,255,255,0.58), transparent 52%),
-    linear-gradient(152deg,
-      rgba(255,155,30,0.94)  0%,
-      rgba(215,52,115,0.90) 46%,
-      rgba(112,18,215,0.86) 100%);
+  background: #e8e4da;
   box-shadow:
-    inset 0 2px 22px rgba(255,255,255,0.24),
-    inset 0 -2px 8px  rgba(0,0,0,0.38),
-    /* chromatic edge refraction */
-    -4px 0  14px rgba(255, 55, 25, 0.72),
-     4px 0  14px rgba(0,  215,255, 0.65),
-    0 -4px  14px rgba(255,205, 18, 0.62),
-    0  4px  14px rgba(158, 18,255, 0.62),
-    0 0 60px rgba(200, 75,255, 0.35);
+    inset 0 0 20px rgba(0, 0, 0, 0.08),
+    inset 0 -4px 12px rgba(140, 132, 120, 0.18),
+    0 0 40px rgba(232, 228, 218, 0.28),
+    0 0 80px rgba(210, 205, 195, 0.12);
+  overflow: hidden;
 }
 
-/* ── Back face — darkest ── */
+/* CRT screen area */
+.face-front::before {
+  content: '';
+  position: absolute;
+  top: 12%;
+  left: 15%;
+  right: 15%;
+  bottom: 28%;
+  border-radius: 4px;
+  background: #d8d4ca;
+  border: 2px solid rgba(100, 94, 84, 0.45);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.12),
+    inset 0 0 10px rgba(0, 0, 0, 0.06);
+}
+
+/* =) face on the screen — rotated 90° so it reads as an upright face */
+.mac-face {
+  position: absolute;
+  top: 12%;
+  left: 15%;
+  right: 15%;
+  bottom: 28%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 46px;
+  font-weight: 700;
+  color: #1a1614;
+  transform: rotate(90deg);
+  letter-spacing: 6px;
+  pointer-events: none;
+  user-select: none;
+  z-index: 1;
+}
+
+/* Disk drive slot */
+.face-front::after {
+  content: '';
+  position: absolute;
+  bottom: 13%;
+  left: 28%;
+  right: 28%;
+  height: 5px;
+  border-radius: 2px;
+  background: #1a1816;
+  border: 1px solid rgba(100, 94, 84, 0.50);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.70);
+}
+
+/* ── Back face ── */
 .face-back {
   transform: rotateY(180deg) translateZ(132px);
-  background:
-    linear-gradient(152deg,
-      rgba(55,12,95,0.90),
-      rgba(26,5,52,0.95));
-  box-shadow: inset 0 0 16px rgba(0,0,0,0.50);
+  background: #c8c4ba;
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, 0.12);
 }
 
-/* ── Left face — shadows, cooler tones ── */
+/* ── Left face — in shadow ── */
 .face-left {
   transform: rotateY(-90deg) translateZ(132px);
-  background:
-    linear-gradient(165deg,
-      rgba(125,35,142,0.82),
-      rgba(62,12,152,0.80) 52%,
-      rgba(10,90,162,0.74));
+  background: linear-gradient(165deg, #ccc8be, #bfbbb2);
   box-shadow:
-    inset 0 2px 10px rgba(255,255,255,0.08),
-    -4px 0 12px rgba(255,55,0,0.42),
-    0 0 30px rgba(95,28,195,0.20);
+    inset -4px 0 12px rgba(0, 0, 0, 0.10),
+    -4px 0 18px rgba(180, 175, 165, 0.20);
 }
 
-/* ── Right face — medium, warm-to-cool ── */
+/* ── Right face — partial light ── */
 .face-right {
   transform: rotateY(90deg) translateZ(132px);
-  background:
-    radial-gradient(ellipse 55% 50% at 30% 28%, rgba(255,255,255,0.28), transparent 52%),
-    linear-gradient(162deg,
-      rgba(188,60,172,0.90),
-      rgba(92,16,202,0.88) 52%,
-      rgba(16,140,222,0.82));
+  background: linear-gradient(162deg, #d8d4ca, #ccc8be);
   box-shadow:
-    inset 0 2px 16px rgba(255,255,255,0.15),
-     4px 0 12px rgba(0,175,255,0.58),
-    0 0 38px rgba(155,48,255,0.28);
+    inset 4px 0 10px rgba(0, 0, 0, 0.08),
+    4px 0 18px rgba(200, 196, 186, 0.22);
 }
 
-/* ── Top face — brightest, catches the key light ── */
+/* ── Top face — brightest, key light ── */
 .face-top {
   transform: rotateX(90deg) translateZ(132px);
-  background:
-    radial-gradient(ellipse 70% 65% at 38% 34%,
-      rgba(255,255,255,0.92),
-      rgba(255,242,145,0.78) 38%,
-      rgba(255,178,55,0.55)  68%,
-      transparent 88%),
-    linear-gradient(145deg,
-      rgba(255,232,95,0.96),
-      rgba(255,168,45,0.92) 60%,
-      rgba(238,98,38,0.88));
+  background: linear-gradient(145deg, #f0ece2, #e4e0d6);
   box-shadow:
-    inset 0 0 44px rgba(255,255,200,0.38),
-    0 0 55px rgba(255,198,55,0.50),
-    0 0 100px rgba(255,155,38,0.28);
+    inset 0 -4px 14px rgba(0, 0, 0, 0.08),
+    0 0 35px rgba(240, 236, 226, 0.38);
 }
 
-/* ── Bottom face — very dark ── */
+/* ── Bottom face — darkest ── */
 .face-bottom {
   transform: rotateX(-90deg) translateZ(132px);
-  background:
-    linear-gradient(180deg,
-      rgba(32,7,68,0.90),
-      rgba(16,3,42,0.96));
-  box-shadow: 0 0 22px rgba(78,18,158,0.20);
+  background: #b0aca4;
+  box-shadow: inset 0 4px 12px rgba(0, 0, 0, 0.14);
 }
 
 /* Sharp specular highlight on the cube face edge */
@@ -341,18 +358,18 @@ h1, h2, h3, .hero-kicker {
   width: 170px;
   height: 170px;
   border-radius: 22%;
-  border-top:   2.5px solid rgba(255,250,235,1.00);
-  border-left:  1.5px solid rgba(255,252,244,0.90);
-  border-right: 1px   solid rgba(140,198,255,0.42);
+  border-top:   2.5px solid rgba(255, 253, 248, 0.95);
+  border-left:  1.5px solid rgba(240, 236, 228, 0.80);
+  border-right: 1px   solid rgba(190, 185, 175, 0.40);
   box-shadow:
-    inset 1px 2px 20px rgba(255,250,235,0.58),
-    0 -2px 12px rgba(255,218,78, 0.72),
-    1px  0 12px rgba(98, 198,255, 0.64),
-    0  0  55px rgba(255,238,198, 0.52);
+    inset 1px 2px 20px rgba(255, 253, 248, 0.35),
+    0 -2px 14px rgba(240, 236, 226, 0.55),
+    1px  0 12px rgba(210, 205, 195, 0.30),
+    0  0  55px rgba(220, 216, 206, 0.22);
   mask-image: linear-gradient(145deg, black 10%, transparent 48%);
   transform: translateZ(133px) rotateZ(-5deg);
   pointer-events: none;
-  animation: specular-shift 10s cubic-bezier(0.37, 0, 0.21, 1) infinite;
+  animation: specular-shift 8s ease-in-out infinite;
 }
 
 /* ─── Setup section ─────────────────────────────────────────────────── */
@@ -428,8 +445,8 @@ h1, h2, h3, .hero-kicker {
 
 /* ─── Keyframes ─────────────────────────────────────────────────────── */
 @keyframes idle-float {
-  0%, 100% { transform: translateY(0px) rotateZ(0deg); }
-  50%       { transform: translateY(-16px) rotateZ(0.6deg); }
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-16px); }
 }
 
 @keyframes glow-pulse {
@@ -443,17 +460,15 @@ h1, h2, h3, .hero-kicker {
   100% { transform: rotateX(24deg) rotateY(360deg); }
 }
 
-/* Gentle sway on .geo-primitive — adds organic life without fighting spin */
-@keyframes primitive-rock {
-  0%, 100% { transform: rotateZ(-2deg) scale(1.00); }
-  33%       { transform: rotateZ( 2deg) scale(1.04); }
-  66%       { transform: rotateZ(-4deg) scale(0.97); }
+/* Subtle scale breathe — no rotation to fight the Y-spin on the parent */
+@keyframes primitive-breathe {
+  0%, 100% { transform: scale(1.00); }
+  50%       { transform: scale(1.035); }
 }
 
 @keyframes specular-shift {
-  0%, 100% { transform: translateZ(133px) rotateZ(-5deg) scale(0.91); opacity: 0.88; }
-  33%       { transform: translateZ(138px) rotateZ( 5deg) scale(1.02); opacity: 0.96; }
-  66%       { transform: translateZ(129px) rotateZ(-2deg) scale(0.97); opacity: 0.92; }
+  0%, 100% { transform: translateZ(133px) rotateZ(-5deg) scale(0.93); opacity: 0.86; }
+  50%       { transform: translateZ(133px) rotateZ(-5deg) scale(1.01); opacity: 0.96; }
 }
 
 /* ─── Responsive ────────────────────────────────────────────────────── */
