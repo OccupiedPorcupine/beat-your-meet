@@ -8,15 +8,26 @@ export default function Home() {
         <div className="hero-flares" aria-hidden="true" />
 
         <div className="hero-copy">
-          <p className="hero-kicker">- BEATYOURMEET</p>
+          <p className="hero-kicker">INTRODUCING...</p>
           <h1 className="hero-title">BEATYOURMEET</h1>
           <p className="hero-subtitle">
-            THE AI MEETING BOT, BEAT, THAT KEEPS YOU ON TRACK
+            THE AI MEETING BOT THAT KEEPS YOU ON TRACK
           </p>
           <p className="hero-meta">
             Voice-first meeting facilitation
             <br />
             Agenda guardrails, tangent recovery, and time-box awareness
+            <br />
+            <br />
+            --- Powered by Mistral Large 3, ElevenLabs, and LiveKit
+            <br />
+            <br />
+            <br />
+            <br />
+            <br />
+            <br />
+            <br />
+            <br />
           </p>
 
           <Link href="/setup" className="hero-cta">
