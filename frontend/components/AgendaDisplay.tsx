@@ -53,21 +53,22 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
   // Record the local timestamp each time a new state snapshot arrives from the agent
   const [lastStateAt, setLastStateAt] = useState(Date.now());
   const [openNotesById, setOpenNotesById] = useState<Record<number, boolean>>({});
+  const meetingNotes = state.meeting_notes ?? [];
 
   useEffect(() => {
     setLastStateAt(Date.now());
   }, [state]);
 
   useEffect(() => {
-    if (!state.meeting_notes) return;
+    if (meetingNotes.length === 0) return;
     setOpenNotesById((prev) => {
       const next = { ...prev };
-      for (const note of state.meeting_notes) {
+      for (const note of meetingNotes) {
         if (next[note.item_id] === undefined) next[note.item_id] = true;
       }
       return next;
     });
-  }, [state.meeting_notes]);
+  }, [meetingNotes]);
 
   // Tick every second so the progress bar and elapsed time count up smoothly
   // between the 15-second agent updates
@@ -110,7 +111,7 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
             item.state === "overtime" || item.state === "extended";
           const isWarning = item.state === "warning";
           const notes = isCompleted
-            ? (state.meeting_notes ?? []).find((n) => n.item_id === item.id)
+            ? meetingNotes.find((n) => n.item_id === item.id)
             : undefined;
           const isNotesOpen = notes ? openNotesById[item.id] !== false : false;
 
