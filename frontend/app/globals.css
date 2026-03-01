@@ -1113,6 +1113,10 @@ h1, h2, h3, .hero-kicker {
   margin: 0.6rem 0;
 }
 
+.doc-markdown-transcript p {
+  white-space: pre-line;
+}
+
 .doc-markdown ul,
 .doc-markdown ol {
   margin: 0.6rem 0 0.6rem 1.2rem;

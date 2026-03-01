@@ -29,7 +29,10 @@ def build_transcript(state) -> str:
         if entries:
             for entry in entries:
                 ts = datetime.fromtimestamp(entry["timestamp"]).strftime("%H:%M:%S")
+                # Keep each speaker turn as its own markdown paragraph so
+                # viewers don't collapse consecutive turns into one line.
                 lines.append(f"**[{ts}] {entry['speaker']}:** {entry['text']}")
+                lines.append("")
         else:
             lines.append("*No transcript recorded for this item.*")
         lines.append("")

@@ -36,6 +36,7 @@ export default function DocViewer({
   error,
 }: DocViewerProps) {
   const title = titleOverride || doc?.title || "Meeting Document";
+  const isTranscriptDoc = doc?.filename?.toLowerCase() === "transcript.md";
 
   return (
     <section className="post-viewer">
@@ -73,7 +74,9 @@ export default function DocViewer({
           </div>
         )}
         {!loading && !error && content && (
-          <article className="doc-markdown">
+          <article
+            className={`doc-markdown${isTranscriptDoc ? " doc-markdown-transcript" : ""}`}
+          >
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
