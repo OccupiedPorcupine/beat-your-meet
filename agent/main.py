@@ -46,6 +46,56 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger("beat-your-meet")
 logger.setLevel(logging.INFO)
 
+
+def _coerce_llm_content_to_text(content):
+    """Normalize streamed LLM delta content to text for LiveKit parser compatibility.
+
+    Some providers may emit content as structured lists/parts instead of plain
+    strings. LiveKit 1.4.3 expects a string in strip_thinking_tokens().
+    """
+    if content is None or isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            text = _coerce_llm_content_to_text(part)
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "".join(parts) if parts else None
+
+    if isinstance(content, dict):
+        for key in ("text", "content", "value"):
+            if key in content:
+                return _coerce_llm_content_to_text(content[key])
+        return None
+
+    for attr in ("text", "content", "value"):
+        if hasattr(content, attr):
+            return _coerce_llm_content_to_text(getattr(content, attr))
+
+    return None
+
+
+def _patch_livekit_thinking_strip() -> None:
+    """Patch LiveKit thinking-token strip to handle non-string content safely."""
+    from livekit.agents.llm import utils as _lk_llm_utils
+
+    if getattr(_lk_llm_utils.strip_thinking_tokens, "_beat_safe_patched", False):
+        return
+
+    _orig = _lk_llm_utils.strip_thinking_tokens
+
+    def _safe_strip_thinking_tokens(content, thinking):
+        normalized = _coerce_llm_content_to_text(content)
+        return _orig(normalized, thinking)
+
+    _safe_strip_thinking_tokens._beat_safe_patched = True
+    _lk_llm_utils.strip_thinking_tokens = _safe_strip_thinking_tokens
+
+
+_patch_livekit_thinking_strip()
+
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSEY = {"0", "false", "no", "off"}
 _TIME_QUERY_PATTERNS = (
@@ -678,18 +728,59 @@ class BeatFacilitatorAgent(Agent):
         Args:
             query: The search query string.
         """
-        from duckduckgo_search import AsyncDDGS
-
         logger.info("web_search: searching for %r", query)
         try:
-            async with AsyncDDGS() as ddgs:
-                results = []
-                async for r in ddgs.atext(query, max_results=5):
-                    results.append({
-                        "title": r.get("title", ""),
-                        "snippet": r.get("body", ""),
-                        "url": r.get("href", ""),
-                    })
+            # Avoid runtime issues from third-party DDG clients by using
+            # DuckDuckGo's HTML endpoint directly via stdlib networking.
+            def _search_sync() -> list[dict]:
+                import html
+                from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+                from urllib.request import Request, urlopen
+
+                result_link_re = re.compile(
+                    r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                    re.IGNORECASE | re.DOTALL,
+                )
+                snippet_re = re.compile(
+                    r'<(?:a|div)[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div)>',
+                    re.IGNORECASE | re.DOTALL,
+                )
+
+                def _clean(s: str) -> str:
+                    s = re.sub(r"<[^>]+>", " ", s)
+                    s = html.unescape(s)
+                    return re.sub(r"\s+", " ", s).strip()
+
+                def _unwrap_ddg_url(href: str) -> str:
+                    if href.startswith("//"):
+                        href = f"https:{href}"
+                    parsed = urlparse(href)
+                    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+                        uddg = parse_qs(parsed.query).get("uddg", [None])[0]
+                        if uddg:
+                            return unquote(uddg)
+                    return href
+
+                search_url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
+                req = Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urlopen(req, timeout=10) as resp:
+                    page = resp.read().decode("utf-8", errors="ignore")
+
+                links = result_link_re.findall(page)
+                snippets = snippet_re.findall(page)
+                results: list[dict] = []
+                for i, (href, title_html) in enumerate(links[:5]):
+                    snippet_html = snippets[i] if i < len(snippets) else ""
+                    results.append(
+                        {
+                            "title": _clean(title_html),
+                            "snippet": _clean(snippet_html),
+                            "url": _unwrap_ddg_url(href),
+                        }
+                    )
+                return results
+
+            results = await asyncio.to_thread(_search_sync)
             if not results:
                 return {"results": [], "message": "No results found."}
             return {"results": results}
