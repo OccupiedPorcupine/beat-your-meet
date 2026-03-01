@@ -20,7 +20,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import AutoSubscribe, JobContext, RunContext, WorkerOptions, cli, function_tool, llm as lk_llm
+from livekit.agents import AutoSubscribe, JobContext, JobRequest, RunContext, WorkerOptions, cli, function_tool, llm as lk_llm
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import deepgram, elevenlabs, openai, silero
 
@@ -1114,6 +1114,36 @@ async def _send_agenda_state(room: rtc.Room, state: MeetingState):
         logger.warning(f"Failed to send agenda state: {e}")
 
 
+async def request_fnc(req: JobRequest) -> None:
+    """Only accept the job if the room's metadata has invite_bot=True.
+
+    LiveKit auto-dispatches a job to every registered worker when a room is
+    created.  We check the room metadata written by the server to decide
+    whether the host actually wanted the facilitator.
+    """
+    metadata_str = req.room.metadata
+    logger.info(
+        "request_fnc called — room=%s, agent_name=%s, metadata=%s",
+        req.room.name, req.agent_name, metadata_str,
+    )
+    if metadata_str:
+        try:
+            metadata = json.loads(metadata_str)
+            if metadata.get("invite_bot") is True:
+                logger.info("invite_bot=True → ACCEPTING job for room %s", req.room.name)
+                await req.accept(
+                    name="Beat",
+                    identity="beat-facilitator",
+                )
+                return
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse room metadata as JSON")
+
+    # No metadata or invite_bot is not True — decline
+    logger.info("invite_bot not True → REJECTING job for room %s", req.room.name)
+    await req.reject()
+
+
 if __name__ == "__main__":
     agent_port = _resolve_agent_port()
     if _is_port_in_use(agent_port):
@@ -1127,6 +1157,7 @@ if __name__ == "__main__":
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
+            request_fnc=request_fnc,
             port=agent_port,
             agent_name="beat-facilitator",
         )

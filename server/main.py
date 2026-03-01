@@ -222,17 +222,20 @@ def generate_access_code() -> str:
 async def create_room(req: CreateRoomRequest):
     import uuid
 
+    logger.info(f"create_room called — invite_bot={req.invite_bot}, style={req.style}")
     room_name = f"meet-{uuid.uuid4().hex[:8]}"
     access_code = generate_access_code()
     host_token = secrets.token_hex(16)
 
-    # Store room metadata (agenda + style + access code + host token) in LiveKit room metadata
+    # Store room metadata (agenda + style + access code + host token) in LiveKit room metadata.
+    # Include invite_bot so the agent can check whether it should accept the job.
     room_metadata = json.dumps(
         {
             "agenda": req.agenda,
             "style": req.style,
             "access_code": access_code,
             "host_token": host_token,
+            "invite_bot": req.invite_bot,
         }
     )
 
@@ -250,7 +253,7 @@ async def create_room(req: CreateRoomRequest):
                 )
             )
 
-            # If invite_bot is True, dispatch the agent immediately
+            # Only explicitly dispatch the agent when the host opted in
             if req.invite_bot:
                 await lk_api.agent_dispatch.create_dispatch(
                     api.CreateAgentDispatchRequest(
@@ -296,6 +299,7 @@ async def _verify_host_token(room_name: str, host_token: str) -> None:
 
 @app.post("/api/room/{room_name}/invite-bot")
 async def invite_bot(room_name: str, req: BotControlRequest):
+    logger.info(f"invite-bot called for room={room_name}, host_token={'present' if req.host_token else 'missing'}")
     await _verify_host_token(room_name, req.host_token)
 
     lk_api = api.LiveKitAPI(
@@ -311,6 +315,16 @@ async def invite_bot(room_name: str, req: BotControlRequest):
         for p in participants.participants:
             if p.identity == "beat-facilitator":
                 return {"status": "already_active"}
+
+        # Update room metadata to set invite_bot=True so the agent's
+        # request_fnc will accept the job.
+        rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[room_name]))
+        if rooms.rooms:
+            metadata = json.loads(rooms.rooms[0].metadata or "{}")
+            metadata["invite_bot"] = True
+            await lk_api.room.update_room_metadata(
+                api.UpdateRoomMetadataRequest(room=room_name, metadata=json.dumps(metadata))
+            )
 
         # Dispatch the agent
         await lk_api.agent_dispatch.create_dispatch(
