@@ -130,7 +130,7 @@ h1, h2, h3, .hero-kicker {
 
 .hero-subtitle {
   max-width: 24ch;
-  margin: 0 0 2.6rem;
+  margin: 0 0 2.1rem;
   color: rgba(225, 225, 248, 0.85);
   font-size: clamp(1rem, 2.2vw, 1.9rem);
   line-height: 1.1;
@@ -482,7 +482,7 @@ h1, h2, h3, .hero-kicker {
 @media (max-width: 768px) {
   .hero-wrap      { padding-top: 1.8rem; padding-bottom: 8.4rem; }
   .hero-title     { max-width: 8ch; }
-  .hero-subtitle  { font-size: clamp(0.95rem, 4vw, 1.2rem); }
+  .hero-subtitle  { font-size: clamp(0.95rem, 4vw, 1.2rem); margin-bottom: 1.6rem; }
   .hero-meta      { font-size: 0.92rem; }
   .hero-centerpiece { right: -34vw; bottom: -15vh; width: 110vw; }
   .hero-cta       { left: 1.5rem; bottom: 1.4rem; }

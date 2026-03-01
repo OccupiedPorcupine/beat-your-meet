@@ -17,6 +17,7 @@ class Trigger:
     TRANSITION = "transition"
     WRAP_UP = "wrap_up"
     DIRECT_QUESTION = "direct_question"
+    NAMED_ADDRESS = "named_address"
 
 
 @dataclass
@@ -122,6 +123,7 @@ def evaluate(candidate_text: str, trigger: str, ctx: MeetingContext) -> GateResu
     if ctx.style == "chatting" and trigger not in {
         Trigger.INTRO,
         Trigger.DIRECT_QUESTION,
+        Trigger.NAMED_ADDRESS,
     }:
         return _emit(
             trigger=trigger,
@@ -260,6 +262,15 @@ def evaluate(candidate_text: str, trigger: str, ctx: MeetingContext) -> GateResu
             confidence=1.0,
         )
 
+    if trigger == Trigger.NAMED_ADDRESS:
+        return _emit(
+            trigger=trigger,
+            action="speak",
+            text_for_tts=candidate,
+            reason="participant addressed Beat by name",
+            confidence=1.0,
+        )
+
     return _emit(
         trigger=trigger,
         action="silent",
@@ -267,4 +278,3 @@ def evaluate(candidate_text: str, trigger: str, ctx: MeetingContext) -> GateResu
         reason=f"no rule allows trigger '{trigger}'",
         confidence=0.75,
     )
-

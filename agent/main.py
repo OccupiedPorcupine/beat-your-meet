@@ -86,6 +86,13 @@ _END_MEETING_PATTERNS = (
     re.compile(r"\bwe'?re?\s+done\s+(with\s+the\s+)?meeting\b"),
 )
 
+_BEAT_NAME_PATTERNS = (
+    re.compile(r"\b(?:hey\s+)?beat\b"),
+    re.compile(r"\bbeat[,!?]\b"),
+    re.compile(r"^beat\b"),
+    re.compile(r"\b@beat\b"),
+)
+
 
 def _resolve_agent_port() -> int:
     """Resolve agent health-check port from AGENT_PORT with sane defaults."""
@@ -178,6 +185,14 @@ def _is_end_meeting_request(text: str) -> bool:
     return any(pattern.search(normalized) for pattern in _END_MEETING_PATTERNS)
 
 
+def _is_addressed_to_beat(text: str) -> bool:
+    """Return True when the utterance explicitly addresses Beat by name."""
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _BEAT_NAME_PATTERNS)
+
+
 def _format_duration_for_tts(minutes: float) -> str:
     """Format minute float as concise speech-friendly duration text."""
     total_seconds = max(0, int(round(minutes * 60)))
@@ -250,7 +265,20 @@ class BeatFacilitatorAgent(Agent):
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         latest_user_text = _extract_latest_user_text(chat_ctx)
+        is_addressed_to_beat = _is_addressed_to_beat(latest_user_text)
         is_time_query = _is_time_query(latest_user_text)
+        is_skip_request = _is_skip_request(latest_user_text)
+        is_end_meeting_request = _is_end_meeting_request(latest_user_text)
+
+        if not is_addressed_to_beat:
+            if is_skip_request or is_end_meeting_request:
+                logger.info(
+                    "passive_mode_ignored_command=true skip_request=%s end_meeting_request=%s",
+                    is_skip_request,
+                    is_end_meeting_request,
+                )
+            logger.debug("passive_mode_ignored_utterance=true")
+            return
 
         if is_time_query and self._deterministic_time_queries_enabled:
             status = self._meeting_state.get_time_status()
@@ -266,7 +294,7 @@ class BeatFacilitatorAgent(Agent):
             logger.info("time_query_detected=true time_query_path=llm")
 
         # --- Skip current agenda item ---
-        if _is_skip_request(latest_user_text) and self._room:
+        if is_skip_request and self._room:
             state = self._meeting_state
             current_topic = state.current_item.topic if state.current_item else None
             if current_topic:
@@ -283,7 +311,7 @@ class BeatFacilitatorAgent(Agent):
                 return
 
         # --- End meeting ---
-        if _is_end_meeting_request(latest_user_text) and self._room:
+        if is_end_meeting_request and self._room:
             logger.info("end_meeting_request detected")
             payload = json.dumps({"type": "meeting_ended"}).encode()
             asyncio.create_task(
