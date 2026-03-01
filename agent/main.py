@@ -667,6 +667,36 @@ class BeatFacilitatorAgent(Agent):
             ],
         }
 
+    @function_tool()
+    async def web_search(self, context: RunContext, query: str) -> dict:
+        """Search the web for current information, latest news, facts, or data.
+
+        Use this when a participant asks about recent events, news, statistics,
+        facts you're unsure about, or anything that requires up-to-date information
+        beyond your training data. Keep queries concise and specific.
+
+        Args:
+            query: The search query string.
+        """
+        from duckduckgo_search import AsyncDDGS
+
+        logger.info("web_search: searching for %r", query)
+        try:
+            async with AsyncDDGS() as ddgs:
+                results = []
+                async for r in ddgs.atext(query, max_results=5):
+                    results.append({
+                        "title": r.get("title", ""),
+                        "snippet": r.get("body", ""),
+                        "url": r.get("href", ""),
+                    })
+            if not results:
+                return {"results": [], "message": "No results found."}
+            return {"results": results}
+        except Exception as e:
+            logger.exception("web_search failed for query %r", query)
+            return {"results": [], "error": str(e)}
+
 
 # ---------------------------------------------------------------------------
 # Entrypoint

@@ -6,3 +6,4 @@ livekit-plugins-openai>=0.6
 mistralai
 httpx
 python-dotenv
+duckduckgo-search
