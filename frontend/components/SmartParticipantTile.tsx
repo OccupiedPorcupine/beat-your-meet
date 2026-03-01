@@ -28,8 +28,9 @@ function getInitials(name: string): string {
   return (name || "?").charAt(0).toUpperCase();
 }
 
-function isBot(participant: { kind?: unknown; identity: string }): boolean {
+export function isBot(participant: { kind?: unknown; identity: string }): boolean {
   if (participant.kind === ParticipantKind.AGENT) return true;
+  if (participant.identity === "beat-facilitator") return true;
   return (
     participant.identity.startsWith("agent-") ||
     participant.identity.toLowerCase().includes("bot")
@@ -104,7 +105,10 @@ export default function SmartParticipantTile({
                   fill="none"
                 />
               </svg>
-              <ParticipantName className="text-sm text-gray-300 font-medium" />
+              <span className="text-sm text-gray-300 font-medium">Beat</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 font-medium">
+                Facilitator
+              </span>
             </div>
           </ParticipantContextIfNeeded>
         </TrackRefContextIfNeeded>

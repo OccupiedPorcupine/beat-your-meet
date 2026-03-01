@@ -10,13 +10,14 @@ import {
   ConnectionStateToast,
   useDataChannel,
   useRoomContext,
+  useParticipants,
   useTracks,
   PreJoin,
 } from "@livekit/components-react";
 import type { LocalUserChoices } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { Track } from "livekit-client";
-import SmartParticipantTile from "@/components/SmartParticipantTile";
+import SmartParticipantTile, { isBot } from "@/components/SmartParticipantTile";
 import CustomControlBar from "@/components/CustomControlBar";
 import AgendaDisplay from "@/components/AgendaDisplay";
 import ChatPanel from "@/components/ChatPanel";
@@ -228,15 +229,91 @@ function RoomPageInner() {
   );
 }
 
+type BotStatus = "absent" | "joining" | "active" | "leaving";
+
 function MeetingRoom() {
   const router = useRouter();
+  const params = useParams();
+  const roomName = params.id as string;
   const room = useRoomContext();
   const senderName = room.localParticipant.identity;
+  const participants = useParticipants();
 
   const [agendaState, setAgendaState] = useState<AgendaState | null>(null);
   const [activeSidePanel, setActiveSidePanel] = useState<"agenda" | "chat" | null>("agenda");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [activeStyle, setActiveStyle] = useState<FacilitatorStyle>("moderate");
+  const [botStatus, setBotStatus] = useState<BotStatus>("absent");
+  const [botError, setBotError] = useState<string | null>(null);
+
+  // Read host_token from sessionStorage — only the host has it
+  const hostToken = typeof window !== "undefined"
+    ? sessionStorage.getItem(`host_token_${roomName}`)
+    : null;
+  const isHost = !!hostToken;
+
+  // Track bot presence from participant list
+  useEffect(() => {
+    const botPresent = participants.some((p) => isBot(p));
+    if (botPresent && (botStatus === "absent" || botStatus === "joining")) {
+      setBotStatus("active");
+      setBotError(null);
+    } else if (!botPresent && botStatus === "active") {
+      setBotStatus("absent");
+    } else if (!botPresent && botStatus === "leaving") {
+      setBotStatus("absent");
+    }
+  }, [participants, botStatus]);
+
+  // Joining timeout — reset to absent after 20s
+  useEffect(() => {
+    if (botStatus !== "joining") return;
+    const timer = setTimeout(() => {
+      setBotStatus("absent");
+      setBotError("Facilitator failed to join. Try again.");
+    }, 20_000);
+    return () => clearTimeout(timer);
+  }, [botStatus]);
+
+  const inviteBotToRoom = useCallback(async () => {
+    if (!hostToken) return;
+    setBotStatus("joining");
+    setBotError(null);
+    try {
+      const res = await fetch(`${SERVER_URL}/api/room/${roomName}/invite-bot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ host_token: hostToken }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `Error ${res.status}`);
+      }
+    } catch (err) {
+      setBotStatus("absent");
+      setBotError(err instanceof Error ? err.message : "Failed to invite bot");
+    }
+  }, [hostToken, roomName]);
+
+  const removeBotFromRoom = useCallback(async () => {
+    if (!hostToken) return;
+    setBotStatus("leaving");
+    setBotError(null);
+    try {
+      const res = await fetch(`${SERVER_URL}/api/room/${roomName}/bot`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ host_token: hostToken }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `Error ${res.status}`);
+      }
+    } catch (err) {
+      setBotStatus("active");
+      setBotError(err instanceof Error ? err.message : "Failed to remove bot");
+    }
+  }, [hostToken, roomName]);
 
   // Keep style button in sync with agent-reported style
   useEffect(() => {
@@ -345,13 +422,49 @@ function MeetingRoom() {
                     </button>
                   ))}
                 </div>
+                {/* Bot control (host only) */}
+                {isHost && (
+                  <div className="px-3 py-2 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+                    {botStatus === "absent" && (
+                      <button
+                        onClick={inviteBotToRoom}
+                        className="w-full py-1.5 text-xs font-medium rounded-lg bg-emerald-500/25 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/40 transition-colors"
+                      >
+                        Invite Facilitator
+                      </button>
+                    )}
+                    {botStatus === "joining" && (
+                      <div className="w-full py-1.5 text-xs font-medium rounded-lg bg-yellow-500/15 border border-yellow-400/20 text-yellow-200 text-center">
+                        Joining…
+                      </div>
+                    )}
+                    {botStatus === "active" && (
+                      <button
+                        onClick={removeBotFromRoom}
+                        className="w-full py-1.5 text-xs font-medium rounded-lg bg-red-500/15 border border-red-400/20 text-red-300 hover:bg-red-500/30 transition-colors"
+                      >
+                        Remove Facilitator
+                      </button>
+                    )}
+                    {botStatus === "leaving" && (
+                      <div className="w-full py-1.5 text-xs font-medium rounded-lg bg-yellow-500/15 border border-yellow-400/20 text-yellow-200 text-center">
+                        Leaving…
+                      </div>
+                    )}
+                    {botError && (
+                      <p className="mt-1 text-[10px] text-red-400 text-center">{botError}</p>
+                    )}
+                  </div>
+                )}
                 {/* Agenda content */}
                 <div className="flex-1 overflow-y-auto p-2">
                   {agendaState ? (
                     <AgendaDisplay state={agendaState} />
                   ) : (
                     <p className="text-center text-sm py-6" style={{ color: "rgba(200,210,240,0.45)" }}>
-                      Waiting for agent…
+                      {botStatus === "absent" && isHost
+                        ? "Invite the facilitator to get started"
+                        : "Waiting for agent…"}
                     </p>
                   )}
                 </div>
