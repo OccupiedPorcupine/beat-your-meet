@@ -48,6 +48,11 @@ class AgendaRequest(BaseModel):
 class CreateRoomRequest(BaseModel):
     agenda: dict
     style: str  # "gentle" | "moderate" | "chatting"
+    invite_bot: bool = True
+
+
+class BotControlRequest(BaseModel):
+    host_token: str
 
 
 # ── Token Generation ─────────────────────────────────────────────────
@@ -184,13 +189,15 @@ async def create_room(req: CreateRoomRequest):
 
     room_name = f"meet-{uuid.uuid4().hex[:8]}"
     access_code = generate_access_code()
+    host_token = secrets.token_hex(16)
 
-    # Store room metadata (agenda + style + access code) in LiveKit room metadata
+    # Store room metadata (agenda + style + access code + host token) in LiveKit room metadata
     room_metadata = json.dumps(
         {
             "agenda": req.agenda,
             "style": req.style,
             "access_code": access_code,
+            "host_token": host_token,
         }
     )
 
@@ -207,6 +214,16 @@ async def create_room(req: CreateRoomRequest):
                     metadata=room_metadata,
                 )
             )
+
+            # If invite_bot is True, dispatch the agent immediately
+            if req.invite_bot:
+                await lk_api.agent_dispatch.create_dispatch(
+                    api.CreateAgentDispatchRequest(
+                        agent_name="beat-facilitator",
+                        room=room_name,
+                    )
+                )
+                logger.info(f"Dispatched bot to room: {room_name}")
         finally:
             await lk_api.aclose()
     except KeyError as e:
@@ -217,7 +234,84 @@ async def create_room(req: CreateRoomRequest):
         raise HTTPException(status_code=502, detail=f"Failed to create LiveKit room: {e}")
 
     logger.info(f"Created room: {room_name} with access code: {access_code}")
-    return {"room_name": room_name, "access_code": access_code}
+    return {"room_name": room_name, "access_code": access_code, "host_token": host_token}
+
+
+# ── Bot Control ──────────────────────────────────────────────────────
+
+
+async def _verify_host_token(room_name: str, host_token: str) -> None:
+    """Verify that the provided host_token matches the one stored in room metadata."""
+    lk_api = api.LiveKitAPI(
+        os.environ["LIVEKIT_URL"],
+        os.environ["LIVEKIT_API_KEY"],
+        os.environ["LIVEKIT_API_SECRET"],
+    )
+    try:
+        rooms = await lk_api.room.list_rooms(api.ListRoomsRequest(names=[room_name]))
+        if not rooms.rooms:
+            raise HTTPException(status_code=404, detail="Room not found")
+        room_metadata = json.loads(rooms.rooms[0].metadata or "{}")
+        stored_token = room_metadata.get("host_token", "")
+        if not secrets.compare_digest(stored_token, host_token):
+            raise HTTPException(status_code=403, detail="Invalid host token")
+    finally:
+        await lk_api.aclose()
+
+
+@app.post("/api/room/{room_name}/invite-bot")
+async def invite_bot(room_name: str, req: BotControlRequest):
+    await _verify_host_token(room_name, req.host_token)
+
+    lk_api = api.LiveKitAPI(
+        os.environ["LIVEKIT_URL"],
+        os.environ["LIVEKIT_API_KEY"],
+        os.environ["LIVEKIT_API_SECRET"],
+    )
+    try:
+        # Check if bot is already in the room
+        participants = await lk_api.room.list_participants(
+            api.ListParticipantsRequest(room=room_name)
+        )
+        for p in participants.participants:
+            if p.identity == "beat-facilitator":
+                return {"status": "already_active"}
+
+        # Dispatch the agent
+        await lk_api.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name="beat-facilitator",
+                room=room_name,
+            )
+        )
+    finally:
+        await lk_api.aclose()
+
+    logger.info(f"Invited bot to room: {room_name}")
+    return {"status": "invited"}
+
+
+@app.delete("/api/room/{room_name}/bot")
+async def remove_bot(room_name: str, req: BotControlRequest):
+    await _verify_host_token(room_name, req.host_token)
+
+    lk_api = api.LiveKitAPI(
+        os.environ["LIVEKIT_URL"],
+        os.environ["LIVEKIT_API_KEY"],
+        os.environ["LIVEKIT_API_SECRET"],
+    )
+    try:
+        await lk_api.room.remove_participant(
+            api.RoomParticipantIdentity(room=room_name, identity="beat-facilitator")
+        )
+    except Exception as e:
+        logger.warning(f"Failed to remove bot from {room_name}: {e}")
+        raise HTTPException(status_code=404, detail="Bot not found in room")
+    finally:
+        await lk_api.aclose()
+
+    logger.info(f"Removed bot from room: {room_name}")
+    return {"status": "removed"}
 
 
 # ── Health Check ─────────────────────────────────────────────────────

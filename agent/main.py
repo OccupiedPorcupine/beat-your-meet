@@ -388,7 +388,7 @@ class BeatFacilitatorAgent(Agent):
 
 async def entrypoint(ctx: JobContext):
     try:
-        logger.info("Connecting to room...")
+        logger.info("Explicit dispatch accepted — joining room %s", ctx.room.name)
         await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
         # Wait for the first human participant to join
@@ -976,4 +976,10 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, port=agent_port))
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            port=agent_port,
+            agent_name="beat-facilitator",
+        )
+    )
