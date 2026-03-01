@@ -57,8 +57,8 @@ class MeetingState:
 
     # Tangent tolerance per style (seconds). "chatting" disables tangent checks entirely.
     TANGENT_TOLERANCE = {
-        "gentle": 60,
-        "moderate": 30,
+        "gentle": 120,
+        "moderate": 60,
     }
 
     INTERVENTION_COOLDOWN = 30  # seconds between interventions
@@ -175,7 +175,7 @@ class MeetingState:
 
     def update_silence_signal(self):
         """Called when a silence phrase is detected in participant speech."""
-        self.silence_requested_until = time.time() + 120
+        self.silence_requested_until = time.time() + 300  # 5 minutes
 
     def build_meeting_context(self, tangent_confidence: float = 0.0) -> "MeetingContext":
         """Build a MeetingContext snapshot for speech gate evaluation."""

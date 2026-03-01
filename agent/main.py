@@ -142,6 +142,18 @@ _CUSTOM_DOC_PATTERN = re.compile(
 )
 
 
+def _bg_task(coro, *, name: str) -> asyncio.Task:
+    """Create a fire-and-forget task that logs exceptions instead of discarding them."""
+    task = asyncio.create_task(coro, name=name)
+
+    def _on_done(t: asyncio.Task) -> None:
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("Background task %r failed", name, exc_info=t.exception())
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 def _resolve_agent_port() -> int:
     """Resolve agent health-check port from AGENT_PORT with sane defaults."""
     raw = os.environ.get("AGENT_PORT", "8081")
@@ -336,14 +348,14 @@ class BeatFacilitatorAgent(Agent):
         is_skip_request = _is_skip_request(latest_user_text)
         is_end_meeting_request = _is_end_meeting_request(latest_user_text)
 
-        if not is_addressed_to_beat:
-            if is_skip_request or is_end_meeting_request:
-                logger.info(
-                    "passive_mode_ignored_command=true skip_request=%s end_meeting_request=%s",
-                    is_skip_request,
-                    is_end_meeting_request,
-                )
-            logger.debug("passive_mode_ignored_utterance=true")
+        # Only require explicit "Beat" addressing when silenced by a participant
+        silence_active = (
+            self._meeting_state.silence_requested_until > 0
+            and time.time() < self._meeting_state.silence_requested_until
+        )
+        if silence_active and not is_addressed_to_beat:
+            remaining = max(0, self._meeting_state.silence_requested_until - time.time())
+            logger.info("silence_mode: suppressing response (%.0fs remaining, user=%r)", remaining, latest_user_text[:60])
             return
 
         if is_time_query and self._deterministic_time_queries_enabled:
@@ -365,8 +377,8 @@ class BeatFacilitatorAgent(Agent):
             current_topic = state.current_item.topic if state.current_item else None
             if current_topic:
                 next_item = state.advance_to_next()
-                asyncio.create_task(_send_agenda_state(self._room, state))
-                asyncio.create_task(_refresh_agent_instructions(self, state))
+                _bg_task(_send_agenda_state(self._room, state), name="send_agenda_state_skip")
+                _bg_task(_refresh_agent_instructions(self, state), name="refresh_instructions_skip")
                 state.record_intervention()
                 if next_item:
                     logger.info("skip_request: skipped '%s', moving to '%s'", current_topic, next_item.topic)
@@ -379,7 +391,7 @@ class BeatFacilitatorAgent(Agent):
         # --- End meeting ---
         if is_end_meeting_request and self._room:
             logger.info("end_meeting_request detected")
-            asyncio.create_task(_end_meeting(self._room, self._meeting_state))
+            _bg_task(_end_meeting(self._room, self._meeting_state), name="end_meeting_voice")
             yield "Thanks everyone, it's been a great meeting! Take care and goodbye!"
             return
 
@@ -396,8 +408,14 @@ class BeatFacilitatorAgent(Agent):
         if not is_time_query:
             logger.debug("time_query_detected=false")
 
-        async for chunk in super().llm_node(chat_ctx, tools, model_settings):
-            yield chunk
+        logger.info("llm_node: calling LLM addressed_to_beat=%s text=%r", is_addressed_to_beat, latest_user_text[:80])
+        try:
+            async for chunk in super().llm_node(chat_ctx, tools, model_settings):
+                yield chunk
+        except Exception:
+            logger.exception("llm_node: LLM call failed for utterance %r", latest_user_text[:80])
+            if is_addressed_to_beat:
+                yield "Sorry, I had a technical hiccup — could you repeat that?"
 
     # ------------------------------------------------------------------
     # Function tools — auto-discovered by LiveKit and exposed to the LLM
@@ -599,7 +617,15 @@ async def entrypoint(ctx: JobContext):
                 ):
                     meeting_state.style = msg["style"]
                     logger.info(f"Style changed to {msg['style']}")
-                    asyncio.create_task(_refresh_agent_instructions(agent, meeting_state))
+                    _bg_task(_refresh_agent_instructions(agent, meeting_state), name="refresh_instructions_style")
+
+                # End meeting triggered from UI
+                elif msg.get("type") == "end_meeting":
+                    logger.info("end_meeting signal received from participant")
+                    _bg_task(
+                        _end_meeting(ctx.room, meeting_state, mistral_client=mistral_chat_client),
+                        name="end_meeting_ui",
+                    )
 
                 # @beat mention in the chat
                 elif msg.get("type") == "chat_message" and not msg.get("is_agent"):
@@ -607,10 +633,11 @@ async def entrypoint(ctx: JobContext):
                     if text.strip().lower().startswith("@beat"):
                         question = text.strip()[5:].strip()  # strip "@beat"
                         sender = msg.get("sender", "someone")
-                        asyncio.create_task(
+                        _bg_task(
                             _handle_chat_mention(
                                 ctx.room, meeting_state, mistral_chat_client, agent, sender, question
-                            )
+                            ),
+                            name="chat_mention",
                         )
             except Exception:
                 logger.exception("Failed to handle data_received")
@@ -755,7 +782,7 @@ async def _handle_chat_mention(
     # --- End meeting ---
     if _is_end_meeting_request(question):
         logger.info("chat end_meeting request from %s", sender)
-        asyncio.create_task(_end_meeting(room, state, mistral_client=client))
+        _bg_task(_end_meeting(room, state, mistral_client=client), name="end_meeting_chat")
         await _reply("Thanks everyone, it's been a great meeting! Goodbye!")
         return
 

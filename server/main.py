@@ -4,7 +4,7 @@ import json
 import secrets
 import string
 import re as _re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -377,7 +377,7 @@ async def upload_doc(room_id: str, req: UploadDocRequest):
         "filename": req.filename,
         "title": req.title,
         "size_bytes": len(req.content.encode("utf-8")),
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
     logger.info("Stored doc %s for room %s", req.filename, room_id)

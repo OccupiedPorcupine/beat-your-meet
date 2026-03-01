@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import {
   LiveKitRoom,
@@ -253,38 +253,20 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
   const router = useRouter();
   const room = useRoomContext();
   const senderName = room.localParticipant.identity;
-  const participants = useParticipants();
+  const redirectingRef = useRef(false);
 
   const [agendaState, setAgendaState] = useState<AgendaState | null>(null);
   const [activeSidePanel, setActiveSidePanel] = useState<"agenda" | "chat" | null>("agenda");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [activeStyle, setActiveStyle] = useState<FacilitatorStyle>("moderate");
-  const [botStatus, setBotStatus] = useState<BotStatus>("absent");
-  const [botError, setBotError] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState(false);
 
-  const hostToken = typeof window !== "undefined"
-    ? sessionStorage.getItem(`host_token_${roomName}`)
-    : null;
-  const isHost = !!hostToken;
-
-  useEffect(() => {
-    const botPresent = participants.some((p) => isBot(p));
-    if (botPresent && (botStatus === "absent" || botStatus === "joining")) {
-      setBotStatus("active");
-      setBotError(null);
-    } else if (!botPresent && (botStatus === "active" || botStatus === "leaving")) {
-      setBotStatus("absent");
-    }
-  }, [participants, botStatus]);
-
-  useEffect(() => {
-    if (botStatus !== "joining") return;
-    const timer = setTimeout(() => {
-      setBotStatus("absent");
-      setBotError("Facilitator failed to join. Try again.");
-    }, 20_000);
-    return () => clearTimeout(timer);
-  }, [botStatus]);
+  const goToPostMeeting = useCallback(() => {
+    if (redirectingRef.current) return;
+    redirectingRef.current = true;
+    const encoded = encodeURIComponent(accessCode);
+    router.push(`/post-meeting/${roomName}?code=${encoded}`);
+  }, [accessCode, roomName, router]);
 
   // Keep style button in sync with agent-reported style
   useEffect(() => {
@@ -297,11 +279,10 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
       const data = JSON.parse(new TextDecoder().decode(msg.payload));
       if (data.type === "agenda_state") setAgendaState(data);
       else if (data.type === "meeting_ended" || data.type === "docs_ready") {
-        const encoded = encodeURIComponent(accessCode);
-        router.push(`/post-meeting/${roomName}?code=${encoded}`);
+        goToPostMeeting();
       }
     } catch { /* ignore */ }
-  }, [accessCode, roomName, router]);
+  }, [goToPostMeeting]);
 
   // Inbound chat messages (from all participants + Beat)
   const onChatData = useCallback((msg: any) => {
@@ -381,6 +362,22 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
     room.localParticipant.publishData(payload, { reliable: true }).catch(console.error);
   }, [room]);
 
+  const handleEndMeeting = useCallback(async () => {
+    const payload = new TextEncoder().encode(JSON.stringify({ type: "end_meeting" }));
+    try {
+      await room.localParticipant.publishData(payload, { reliable: true });
+    } catch (err) {
+      console.error("Failed to send end_meeting:", err);
+    }
+  }, [room]);
+
+  const handleLeave = useCallback(async () => {
+    if (leaving) return;
+    setLeaving(true);
+    await handleEndMeeting();
+    goToPostMeeting();
+  }, [handleEndMeeting, leaving, goToPostMeeting]);
+
   const togglePanel = useCallback((panel: "agenda" | "chat") => {
     setActiveSidePanel((prev) => (prev === panel ? null : panel));
   }, []);
@@ -392,15 +389,6 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
 
   return (
     <div className="room-shell">
-      <div className="room-top-actions">
-        <button
-          type="button"
-          onClick={() => router.push("/")}
-          className="room-home-btn"
-        >
-          Home
-        </button>
-      </div>
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Video grid */}
         <div className="flex-1 relative overflow-hidden min-h-0">
@@ -506,6 +494,9 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
         activeSidePanel={activeSidePanel}
         onToggleAgenda={() => togglePanel("agenda")}
         onToggleChat={() => togglePanel("chat")}
+        onEndMeeting={handleEndMeeting}
+        onLeave={handleLeave}
+        leaving={leaving}
       />
 
       <RoomAudioRenderer />

@@ -59,6 +59,15 @@ _SILENCE_PHRASES = [
     "stay quiet",
     "zip it",
     "shh",
+    "shut up",
+    "shut it",
+    "pipe down",
+    "hush",
+    "silence beat",
+    "stop talking beat",
+    "beat stop",
+    "beat be quiet",
+    "beat shut up",
 ]
 
 _TANGENT_THRESHOLD = {"gentle": 0.80, "moderate": 0.70}
@@ -75,7 +84,7 @@ def _tokenize_words(text: str) -> set[str]:
 
 
 def _is_redundant(
-    candidate: str, recent_transcript: str, threshold: float = 0.5
+    candidate: str, recent_transcript: str, threshold: float = 0.85
 ) -> bool:
     """Return True if >threshold fraction of candidate words appear in transcript."""
     if not recent_transcript or not candidate:
@@ -143,7 +152,7 @@ def evaluate(candidate_text: str, trigger: str, ctx: MeetingContext) -> GateResu
         )
 
     silence_active = ctx.silence_until > 0 and time.time() < ctx.silence_until
-    if silence_active and trigger not in {Trigger.TRANSITION, Trigger.WRAP_UP}:
+    if silence_active and trigger not in {Trigger.TRANSITION, Trigger.WRAP_UP, Trigger.NAMED_ADDRESS}:
         return _emit(
             trigger=trigger,
             action="silent",
