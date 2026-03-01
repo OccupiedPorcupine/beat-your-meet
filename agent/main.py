@@ -37,6 +37,7 @@ from prompts import (
     STYLE_INSTRUCTIONS,
     TIME_WARNING_TEMPLATE,
 )
+from multi_audio import MultiParticipantAudioInput
 from speech_gate import (
     GateResult,
     Trigger,
@@ -466,15 +467,16 @@ async def entrypoint(ctx: JobContext):
 
         session = AgentSession()
 
-        # Track transcriptions for monitoring
+        # Track transcriptions for monitoring.
+        # Audio is mixed from all participants, so we can't attribute speech
+        # to a specific speaker. Use "participant" as a generic label — the
+        # transcript is only used for tangent detection, not per-speaker tracking.
         @session.on("user_input_transcribed")
         def on_speech(event):
             if not event.is_final:
                 return
-            # Best-effort speaker identification: if exactly one remote participant
-            # is present use their identity; otherwise fall back to the first joiner.
             remote = list(ctx.room.remote_participants.values())
-            speaker = remote[0].identity if len(remote) == 1 else participant.identity
+            speaker = remote[0].identity if len(remote) == 1 else "participant"
             meeting_state.add_transcript(speaker, event.transcript)
             if detect_silence_request(event.transcript):
                 meeting_state.update_silence_signal()
@@ -513,7 +515,13 @@ async def entrypoint(ctx: JobContext):
             except Exception:
                 logger.exception("Failed to handle data_received")
 
-        # Start the session
+        # Use a custom audio input that mixes ALL participants' audio
+        # instead of the default RoomIO which only listens to one participant.
+        multi_audio = MultiParticipantAudioInput(ctx.room)
+        session.input.audio = multi_audio
+
+        # Start the session — RoomIO will skip its own audio input since
+        # session.input.audio is already set.
         logger.info("Starting agent session...")
         await session.start(agent, room=ctx.room)
 
