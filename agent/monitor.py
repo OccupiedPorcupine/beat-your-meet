@@ -51,6 +51,9 @@ class MeetingState:
     transcript_buffer: list[dict] = field(default_factory=list)
     item_transcripts: dict[int, list[dict]] = field(default_factory=dict)
     meeting_notes: list[ItemNotes] = field(default_factory=list)
+    doc_requests: list = field(default_factory=list)
+    participants_seen: dict = field(default_factory=dict)
+    meeting_end_triggered: bool = False
 
     # Tangent tolerance per style (seconds). "chatting" disables tangent checks entirely.
     TANGENT_TOLERANCE = {
@@ -219,13 +222,19 @@ class MeetingState:
 
     def add_transcript(self, speaker: str, text: str):
         """Add a transcript entry to the buffer."""
-        entry = {"speaker": speaker, "text": text, "timestamp": time.time()}
+        now = time.time()
+        entry = {"speaker": speaker, "text": text, "timestamp": now}
         self.transcript_buffer.append(entry)
         # Dual-write to per-item store (full, no truncation)
         idx = self.current_item_index
         self.item_transcripts.setdefault(idx, []).append(entry)
+        # Track participant first/last seen
+        if speaker not in self.participants_seen:
+            self.participants_seen[speaker] = {"first_seen": now, "last_seen": now}
+        else:
+            self.participants_seen[speaker]["last_seen"] = now
         # Keep only last 2 minutes in the rolling buffer
-        cutoff = time.time() - 120
+        cutoff = now - 120
         self.transcript_buffer = [
             t for t in self.transcript_buffer if t["timestamp"] > cutoff
         ]

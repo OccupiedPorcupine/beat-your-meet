@@ -38,8 +38,8 @@ export default function StyleSelector({ style, onSelect }: StyleSelectorProps) {
             onClick={() => onSelect(s.value)}
             className={`p-3 rounded-lg border text-left transition-colors ${
               style === s.value
-                ? "bg-blue-600 border-blue-600 text-white"
-                : "bg-gray-900 border-gray-700 text-gray-300 hover:border-gray-500"
+                ? "border-[#ffb06a]/80 bg-[#ff7a18]/60 text-white"
+                : "bg-[#2a1508] border-[#ff7a18]/25 text-orange-100/75 hover:border-[#ff7a18]/50"
             }`}
           >
             <div className="font-medium text-sm">{s.label}</div>

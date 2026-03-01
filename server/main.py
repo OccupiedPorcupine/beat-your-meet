@@ -3,6 +3,8 @@ import os
 import json
 import secrets
 import string
+import re as _re
+from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,8 @@ load_dotenv(_dotenv_path)
 
 logger = logging.getLogger("beat-your-meet-server")
 logger.setLevel(logging.INFO)
+
+_DATA_DIR = Path(__file__).resolve().parent / "data"
 
 app = FastAPI(title="Beat Your Meet API")
 
@@ -53,6 +57,37 @@ class CreateRoomRequest(BaseModel):
 
 class BotControlRequest(BaseModel):
     host_token: str
+
+
+class UploadDocRequest(BaseModel):
+    filename: str
+    title: str
+    content: str
+
+
+class DocMeta(BaseModel):
+    filename: str
+    title: str
+    size_bytes: int
+    created_at: str
+
+
+_ROOM_ID_RE = _re.compile(r"^meet-[a-f0-9]{8}$")
+_FILENAME_RE = _re.compile(r"^[a-z0-9][a-z0-9-]{0,58}\.md$")
+
+
+def _safe_room_dir(room_id: str) -> Path:
+    """Validate room_id and return its data directory. Raises 400 on invalid input."""
+    if not _ROOM_ID_RE.match(room_id):
+        raise HTTPException(status_code=400, detail="Invalid room_id format")
+    return _DATA_DIR / "rooms" / room_id
+
+
+def _safe_doc_path(room_id: str, filename: str) -> Path:
+    """Validate both room_id and filename, return the full path."""
+    if not _FILENAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid filename format")
+    return _safe_room_dir(room_id) / filename
 
 
 # ── Token Generation ─────────────────────────────────────────────────
@@ -312,6 +347,60 @@ async def remove_bot(room_name: str, req: BotControlRequest):
 
     logger.info(f"Removed bot from room: {room_name}")
     return {"status": "removed"}
+
+
+# ── Document Storage ──────────────────────────────────────────────────
+
+
+@app.post("/api/rooms/{room_id}/docs", status_code=201)
+async def upload_doc(room_id: str, req: UploadDocRequest):
+    """Agent uploads a generated markdown document."""
+    path = _safe_doc_path(room_id, req.filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(req.content, encoding="utf-8")
+    meta_path = path.with_suffix(".meta.json")
+    meta = {
+        "filename": req.filename,
+        "title": req.title,
+        "size_bytes": len(req.content.encode("utf-8")),
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    logger.info("Stored doc %s for room %s", req.filename, room_id)
+    return {"ok": True}
+
+
+@app.get("/api/rooms/{room_id}/docs")
+async def list_docs(room_id: str) -> list[DocMeta]:
+    """List all available documents for a room."""
+    room_dir = _safe_room_dir(room_id)
+    if not room_dir.exists():
+        return []
+    docs = []
+    for meta_path in sorted(room_dir.glob("*.meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            docs.append(DocMeta(**meta))
+        except Exception:
+            logger.warning("Could not read meta file %s", meta_path)
+    return docs
+
+
+@app.get("/api/rooms/{room_id}/docs/{filename}")
+async def get_doc(room_id: str, filename: str) -> dict:
+    """Fetch the raw markdown content of a specific document."""
+    path = _safe_doc_path(room_id, filename)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    content = path.read_text(encoding="utf-8")
+    meta_path = path.with_suffix(".meta.json")
+    title = filename
+    if meta_path.exists():
+        try:
+            title = json.loads(meta_path.read_text(encoding="utf-8"))["title"]
+        except Exception:
+            pass
+    return {"filename": filename, "title": title, "content": content}
 
 
 # ── Health Check ─────────────────────────────────────────────────────

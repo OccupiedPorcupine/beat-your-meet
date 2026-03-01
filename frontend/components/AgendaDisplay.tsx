@@ -52,10 +52,22 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
   const [now, setNow] = useState(Date.now());
   // Record the local timestamp each time a new state snapshot arrives from the agent
   const [lastStateAt, setLastStateAt] = useState(Date.now());
+  const [openNotesById, setOpenNotesById] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     setLastStateAt(Date.now());
   }, [state]);
+
+  useEffect(() => {
+    if (!state.meeting_notes) return;
+    setOpenNotesById((prev) => {
+      const next = { ...prev };
+      for (const note of state.meeting_notes) {
+        if (next[note.item_id] === undefined) next[note.item_id] = true;
+      }
+      return next;
+    });
+  }, [state.meeting_notes]);
 
   // Tick every second so the progress bar and elapsed time count up smoothly
   // between the 15-second agent updates
@@ -100,6 +112,7 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
           const notes = isCompleted
             ? (state.meeting_notes ?? []).find((n) => n.item_id === item.id)
             : undefined;
+          const isNotesOpen = notes ? openNotesById[item.id] !== false : false;
 
           return (
             <div
@@ -159,10 +172,26 @@ export default function AgendaDisplay({ state }: AgendaDisplayProps) {
                     ? `${formatMinutes(item.actual_elapsed)}`
                     : `${item.duration_minutes}m`}
                 </span>
+
+                {notes && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenNotesById((prev) => ({
+                        ...prev,
+                        [item.id]: !(prev[item.id] ?? true),
+                      }))
+                    }
+                    className="text-xs"
+                    style={{ color: "rgba(180,180,200,0.60)" }}
+                  >
+                    {isNotesOpen ? "Hide summary" : "Show summary"}
+                  </button>
+                )}
               </div>
 
               {/* Notes for completed items */}
-              {notes && <ItemNotesPanel notes={notes} />}
+              {notes && isNotesOpen && <ItemNotesPanel notes={notes} />}
             </div>
           );
         })}

@@ -25,6 +25,7 @@ import type { AgendaState } from "@/components/AgendaDisplay";
 import type { ChatMessage } from "@/components/ChatPanel";
 
 type FacilitatorStyle = "chatting" | "gentle" | "moderate";
+type BotStatus = "absent" | "joining" | "active" | "leaving";
 const STYLE_OPTIONS: { value: FacilitatorStyle; label: string }[] = [
   { value: "chatting", label: "Chat" },
   { value: "gentle",   label: "Gentle" },
@@ -83,6 +84,7 @@ export default function RoomPage() {
 }
 
 function RoomPageInner() {
+  const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
   const roomName = params.id as string;
@@ -100,9 +102,18 @@ function RoomPageInner() {
   if (!accessCode) {
     return (
       <main
-        className="flex items-center justify-center min-h-screen"
+        className="room-join-shell flex items-center justify-center min-h-screen"
         data-lk-theme="default"
       >
+        <div className="room-top-actions">
+          <button
+            type="button"
+            onClick={() => router.push("/")}
+            className="room-home-btn"
+          >
+            Home
+          </button>
+        </div>
         <div className="w-full max-w-sm">
           <div className="text-center mb-6">
             <h1 className="text-3xl font-bold mb-2">Beat Your Meet</h1>
@@ -154,8 +165,17 @@ function RoomPageInner() {
         <div className="hero-flares" aria-hidden="true" />
         <div className="room-prejoin-card setup-shell">
           <div className="setup-header">
-            <p className="hero-kicker">— BEATYOURMEET AI</p>
-            <h2>Join Meeting</h2>
+            <p className="hero-kicker">— BEATYOURMEET</p>
+            <div className="flex items-start justify-between gap-4">
+              <h2>Join Meeting</h2>
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="room-home-btn"
+              >
+                Home
+              </button>
+            </div>
             <p>
               Room:{" "}
               <span className="font-mono" style={{ color: "rgba(255,200,100,0.85)" }}>
@@ -224,17 +244,13 @@ function RoomPageInner() {
       video={preJoinChoices.videoEnabled}
       data-lk-theme="default"
     >
-      <MeetingRoom />
+      <MeetingRoom roomName={roomName} accessCode={accessCode} />
     </LiveKitRoom>
   );
 }
 
-type BotStatus = "absent" | "joining" | "active" | "leaving";
-
-function MeetingRoom() {
+function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: string }) {
   const router = useRouter();
-  const params = useParams();
-  const roomName = params.id as string;
   const room = useRoomContext();
   const senderName = room.localParticipant.identity;
   const participants = useParticipants();
@@ -246,26 +262,21 @@ function MeetingRoom() {
   const [botStatus, setBotStatus] = useState<BotStatus>("absent");
   const [botError, setBotError] = useState<string | null>(null);
 
-  // Read host_token from sessionStorage — only the host has it
   const hostToken = typeof window !== "undefined"
     ? sessionStorage.getItem(`host_token_${roomName}`)
     : null;
   const isHost = !!hostToken;
 
-  // Track bot presence from participant list
   useEffect(() => {
     const botPresent = participants.some((p) => isBot(p));
     if (botPresent && (botStatus === "absent" || botStatus === "joining")) {
       setBotStatus("active");
       setBotError(null);
-    } else if (!botPresent && botStatus === "active") {
-      setBotStatus("absent");
-    } else if (!botPresent && botStatus === "leaving") {
+    } else if (!botPresent && (botStatus === "active" || botStatus === "leaving")) {
       setBotStatus("absent");
     }
   }, [participants, botStatus]);
 
-  // Joining timeout — reset to absent after 20s
   useEffect(() => {
     if (botStatus !== "joining") return;
     const timer = setTimeout(() => {
@@ -274,6 +285,44 @@ function MeetingRoom() {
     }, 20_000);
     return () => clearTimeout(timer);
   }, [botStatus]);
+
+  // Keep style button in sync with agent-reported style
+  useEffect(() => {
+    if (agendaState?.style) setActiveStyle(normalizeStyle(agendaState.style));
+  }, [agendaState?.style]);
+
+  // Agenda + control messages from the agent
+  const onAgendaData = useCallback((msg: any) => {
+    try {
+      const data = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (data.type === "agenda_state") setAgendaState(data);
+      else if (data.type === "meeting_ended" || data.type === "docs_ready") {
+        const encoded = encodeURIComponent(accessCode);
+        router.push(`/post-meeting/${roomName}?code=${encoded}`);
+      }
+    } catch { /* ignore */ }
+  }, [accessCode, roomName, router]);
+
+  // Inbound chat messages (from all participants + Beat)
+  const onChatData = useCallback((msg: any) => {
+    try {
+      const data = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (data.type === "chat_message") {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            sender: data.sender,
+            text: data.text,
+            isAgent: data.is_agent ?? false,
+            timestamp: data.timestamp ?? Date.now() / 1000,
+          },
+        ]);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  useDataChannel("agenda", onAgendaData);
+  useDataChannel("chat", onChatData);
 
   const inviteBotToRoom = useCallback(async () => {
     if (!hostToken) return;
@@ -315,41 +364,6 @@ function MeetingRoom() {
     }
   }, [hostToken, roomName]);
 
-  // Keep style button in sync with agent-reported style
-  useEffect(() => {
-    if (agendaState?.style) setActiveStyle(normalizeStyle(agendaState.style));
-  }, [agendaState?.style]);
-
-  // Agenda + control messages from the agent
-  const onAgendaData = useCallback((msg: any) => {
-    try {
-      const data = JSON.parse(new TextDecoder().decode(msg.payload));
-      if (data.type === "agenda_state") setAgendaState(data);
-      else if (data.type === "meeting_ended") router.push("/");
-    } catch { /* ignore */ }
-  }, [router]);
-
-  // Inbound chat messages (from all participants + Beat)
-  const onChatData = useCallback((msg: any) => {
-    try {
-      const data = JSON.parse(new TextDecoder().decode(msg.payload));
-      if (data.type === "chat_message") {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            sender: data.sender,
-            text: data.text,
-            isAgent: data.is_agent ?? false,
-            timestamp: data.timestamp ?? Date.now() / 1000,
-          },
-        ]);
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  useDataChannel("agenda", onAgendaData);
-  useDataChannel("chat", onChatData);
-
   const sendChatMessage = useCallback((text: string) => {
     setChatMessages((prev) => [
       ...prev,
@@ -378,6 +392,15 @@ function MeetingRoom() {
 
   return (
     <div className="room-shell">
+      <div className="room-top-actions">
+        <button
+          type="button"
+          onClick={() => router.push("/")}
+          className="room-home-btn"
+        >
+          Home
+        </button>
+      </div>
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Video grid */}
         <div className="flex-1 relative overflow-hidden min-h-0">
@@ -422,7 +445,6 @@ function MeetingRoom() {
                     </button>
                   ))}
                 </div>
-                {/* Bot control (host only) */}
                 {isHost && (
                   <div className="px-3 py-2 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
                     {botStatus === "absent" && (
@@ -435,7 +457,7 @@ function MeetingRoom() {
                     )}
                     {botStatus === "joining" && (
                       <div className="w-full py-1.5 text-xs font-medium rounded-lg bg-yellow-500/15 border border-yellow-400/20 text-yellow-200 text-center">
-                        Joining…
+                        Joining...
                       </div>
                     )}
                     {botStatus === "active" && (
@@ -448,7 +470,7 @@ function MeetingRoom() {
                     )}
                     {botStatus === "leaving" && (
                       <div className="w-full py-1.5 text-xs font-medium rounded-lg bg-yellow-500/15 border border-yellow-400/20 text-yellow-200 text-center">
-                        Leaving…
+                        Leaving...
                       </div>
                     )}
                     {botError && (
@@ -464,7 +486,7 @@ function MeetingRoom() {
                     <p className="text-center text-sm py-6" style={{ color: "rgba(200,210,240,0.45)" }}>
                       {botStatus === "absent" && isHost
                         ? "Invite the facilitator to get started"
-                        : "Waiting for agent…"}
+                        : "Waiting for agent..."}
                     </p>
                   )}
                 </div>

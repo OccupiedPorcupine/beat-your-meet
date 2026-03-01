@@ -15,6 +15,7 @@ import socket
 import sys
 import time
 from datetime import datetime
+from dataclasses import dataclass as _dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -85,6 +86,59 @@ _END_MEETING_PATTERNS = (
     re.compile(r"\bthat'?s?\s+(it|all)\s+for\s+today\b"),
     re.compile(r"\bclose\s+(the\s+)?meeting\b"),
     re.compile(r"\bwe'?re?\s+done\s+(with\s+the\s+)?meeting\b"),
+)
+
+_BEAT_NAME_PATTERNS = (
+    re.compile(r"\b(?:hey\s+)?beat\b"),
+    re.compile(r"\bbeat[,!?]\b"),
+    re.compile(r"^beat\b"),
+    re.compile(r"\b@beat\b"),
+)
+
+
+@_dataclass
+class DocumentRequest:
+    doc_type: str  # "attendance" | "action_items" | "custom"
+    description: str  # used as LLM prompt hint for "custom"
+    slug: str  # filename stem e.g. "attendance", "concerns"
+
+
+_DOC_REQUEST_PATTERNS: list[tuple[re.Pattern, str, str, str]] = [
+    # (pattern, doc_type, description, slug)
+    (
+        re.compile(r"\b(take|do|track|record)\s+(an?\s+)?attendance\b"),
+        "attendance",
+        "Record which participants attended the meeting",
+        "attendance",
+    ),
+    (
+        re.compile(r"\bheadcount\b"),
+        "attendance",
+        "Record which participants attended the meeting",
+        "attendance",
+    ),
+    (
+        re.compile(
+            r"\b(list|track|note|collect)\s+(the\s+)?(all\s+)?action\s+items?\b"
+        ),
+        "action_items",
+        "Consolidated list of all action items from the meeting",
+        "action-items",
+    ),
+    (
+        re.compile(r"\b(make|write|create|prepare|generate)\s+(a\s+)?summary\b"),
+        "summary",
+        "Full meeting summary with key points and decisions",
+        "summary",
+    ),
+]
+
+# Catch-all for freeform custom requests:
+# "Beat, keep a record of everyone's concerns"
+# "Beat, note down the budget numbers"
+_CUSTOM_DOC_PATTERN = re.compile(
+    r"\b(keep\s+(a\s+)?(record|log|track|note)\s+of|"
+    r"document|note\s+down|record\s+down)\b"
 )
 
 
@@ -179,6 +233,32 @@ def _is_end_meeting_request(text: str) -> bool:
     return any(pattern.search(normalized) for pattern in _END_MEETING_PATTERNS)
 
 
+def _is_addressed_to_beat(text: str) -> bool:
+    """Return True when the utterance explicitly addresses Beat by name."""
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _BEAT_NAME_PATTERNS)
+
+
+def _detect_doc_request(text: str) -> DocumentRequest | None:
+    """Return a DocumentRequest if the utterance is asking Beat to produce a document."""
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return None
+    for pattern, doc_type, description, slug in _DOC_REQUEST_PATTERNS:
+        if pattern.search(normalized):
+            return DocumentRequest(doc_type=doc_type, description=description, slug=slug)
+    if _CUSTOM_DOC_PATTERN.search(normalized):
+        slug = re.sub(r"[^a-z0-9]+", "-", normalized[:40]).strip("-")
+        return DocumentRequest(
+            doc_type="custom",
+            description=text.strip(),
+            slug=slug or "custom",
+        )
+    return None
+
+
 def _format_duration_for_tts(minutes: float) -> str:
     """Format minute float as concise speech-friendly duration text."""
     total_seconds = max(0, int(round(minutes * 60)))
@@ -251,7 +331,20 @@ class BeatFacilitatorAgent(Agent):
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         latest_user_text = _extract_latest_user_text(chat_ctx)
+        is_addressed_to_beat = _is_addressed_to_beat(latest_user_text)
         is_time_query = _is_time_query(latest_user_text)
+        is_skip_request = _is_skip_request(latest_user_text)
+        is_end_meeting_request = _is_end_meeting_request(latest_user_text)
+
+        if not is_addressed_to_beat:
+            if is_skip_request or is_end_meeting_request:
+                logger.info(
+                    "passive_mode_ignored_command=true skip_request=%s end_meeting_request=%s",
+                    is_skip_request,
+                    is_end_meeting_request,
+                )
+            logger.debug("passive_mode_ignored_utterance=true")
+            return
 
         if is_time_query and self._deterministic_time_queries_enabled:
             status = self._meeting_state.get_time_status()
@@ -267,7 +360,7 @@ class BeatFacilitatorAgent(Agent):
             logger.info("time_query_detected=true time_query_path=llm")
 
         # --- Skip current agenda item ---
-        if _is_skip_request(latest_user_text) and self._room:
+        if is_skip_request and self._room:
             state = self._meeting_state
             current_topic = state.current_item.topic if state.current_item else None
             if current_topic:
@@ -284,13 +377,20 @@ class BeatFacilitatorAgent(Agent):
                 return
 
         # --- End meeting ---
-        if _is_end_meeting_request(latest_user_text) and self._room:
+        if is_end_meeting_request and self._room:
             logger.info("end_meeting_request detected")
-            payload = json.dumps({"type": "meeting_ended"}).encode()
-            asyncio.create_task(
-                self._room.local_participant.publish_data(payload, reliable=True, topic="agenda")
-            )
+            asyncio.create_task(_end_meeting(self._room, self._meeting_state))
             yield "Thanks everyone, it's been a great meeting! Take care and goodbye!"
+            return
+
+        # --- Document request ---
+        doc_req = _detect_doc_request(latest_user_text)
+        if doc_req and self._room:
+            existing_slugs = {r.slug for r in self._meeting_state.doc_requests}
+            if doc_req.slug not in existing_slugs:
+                self._meeting_state.doc_requests.append(doc_req)
+                logger.info("doc_request queued: type=%s slug=%s", doc_req.doc_type, doc_req.slug)
+            yield "Got it — I'll prepare that document at the end of the meeting."
             return
 
         if not is_time_query:
@@ -655,11 +755,7 @@ async def _handle_chat_mention(
     # --- End meeting ---
     if _is_end_meeting_request(question):
         logger.info("chat end_meeting request from %s", sender)
-        ended_payload = json.dumps({"type": "meeting_ended"}).encode()
-        try:
-            await room.local_participant.publish_data(ended_payload, reliable=True, topic="agenda")
-        except Exception:
-            logger.exception("Failed to publish meeting_ended via chat")
+        asyncio.create_task(_end_meeting(room, state, mistral_client=client))
         await _reply("Thanks everyone, it's been a great meeting! Goodbye!")
         return
 
@@ -667,6 +763,16 @@ async def _handle_chat_mention(
     if _is_time_query(question):
         status = state.get_time_status()
         await _reply(_format_time_status_for_tts(status))
+        return
+
+    # --- Document request ---
+    doc_req = _detect_doc_request(question)
+    if doc_req:
+        existing_slugs = {r.slug for r in state.doc_requests}
+        if doc_req.slug not in existing_slugs:
+            state.doc_requests.append(doc_req)
+            logger.info("doc_request queued via chat: type=%s slug=%s", doc_req.doc_type, doc_req.slug)
+        await _reply("Got it — I'll prepare that document at the end of the meeting.")
         return
 
     # --- General question → Mistral ---
@@ -749,6 +855,45 @@ async def _guarded_say(
     return False
 
 
+async def _end_meeting(
+    room: rtc.Room,
+    state: MeetingState,
+    *,
+    mistral_client: "Mistral | None" = None,
+) -> None:
+    """Publish end-of-meeting signals and generate/upload documents."""
+    if state.meeting_end_triggered:
+        return
+    state.meeting_end_triggered = True
+
+    try:
+        payload = json.dumps({"type": "meeting_ended"}).encode()
+        await room.local_participant.publish_data(payload, reliable=True, topic="agenda")
+    except Exception:
+        logger.exception("Failed to publish meeting_ended")
+
+    from doc_generator import generate_and_upload_all_docs
+
+    room_id = room.name
+    server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
+    try:
+        if mistral_client is None:
+            from mistralai import Mistral as _Mistral
+
+            mistral_client = _Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+        await generate_and_upload_all_docs(
+            mistral_client=mistral_client,
+            state=state,
+            room_id=room_id,
+            server_url=server_url,
+        )
+        payload = json.dumps({"type": "docs_ready", "room_id": room_id}).encode()
+        await room.local_participant.publish_data(payload, reliable=True, topic="agenda")
+        logger.info("docs_ready signal sent for room %s", room_id)
+    except Exception:
+        logger.exception("Document generation/upload failed")
+
+
 async def _monitoring_loop(
     session: AgentSession,
     ctx: JobContext,
@@ -768,6 +913,8 @@ async def _monitoring_loop(
         await asyncio.sleep(check_interval)
 
         try:
+            if state.meeting_end_triggered:
+                break
             # In chatting mode skip all facilitation — just keep the UI in sync.
             if state.style == "chatting":
                 await _refresh_agent_instructions(agent, state)
@@ -785,6 +932,7 @@ async def _monitoring_loop(
                     )
                 except Exception:
                     logger.exception("Failed to deliver meeting wrap-up")
+                await _end_meeting(ctx.room, state, mistral_client=mistral_client)
                 break
 
             # Check time-based state transitions
