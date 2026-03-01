@@ -19,7 +19,7 @@ export default function Home() {
             Agenda guardrails, tangent recovery, and time-box awareness
             <br />
             <br />
-            --- Powered by Mistral Large 3, ElevenLabs, and LiveKit
+            --- Powered by Mistral, Deepgram, ElevenLabs, and LiveKit
             <br />
           </p>
 
