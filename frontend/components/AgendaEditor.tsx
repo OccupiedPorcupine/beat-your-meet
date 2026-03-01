@@ -73,7 +73,7 @@ export default function AgendaEditor({ agenda, onUpdate }: AgendaEditorProps) {
       {agenda.items.map((item, index) => (
         <div
           key={item.id}
-          className="flex items-center gap-3 bg-gray-900 border border-gray-800 rounded-lg p-3"
+          className="flex items-center gap-3 rounded-lg border border-[#ff7a18]/20 bg-[#0f0b08] p-3"
         >
           <span className="text-gray-500 text-sm w-6">{index + 1}.</span>
           <input
@@ -93,7 +93,7 @@ export default function AgendaEditor({ agenda, onUpdate }: AgendaEditorProps) {
                   Math.max(1, parseInt(e.target.value) || 1)
                 )
               }
-              className="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-center text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-14 rounded border border-[#ff7a18]/30 bg-gray-800 px-2 py-1 text-center text-sm text-white focus:outline-none focus:border-[#ff7a18]"
               min={1}
             />
             <span className="text-gray-500 text-sm">min</span>
@@ -109,7 +109,7 @@ export default function AgendaEditor({ agenda, onUpdate }: AgendaEditorProps) {
 
       <button
         onClick={addItem}
-        className="w-full py-2 border border-dashed border-gray-700 rounded-lg text-gray-400 hover:text-white hover:border-gray-500 transition-colors text-sm"
+        className="w-full py-2 rounded-lg border border-dashed border-[#ff7a18]/35 text-gray-300 transition-colors text-sm hover:text-white hover:border-[#ff7a18]/60"
       >
         + Add item
       </button>

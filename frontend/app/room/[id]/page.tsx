@@ -82,6 +82,7 @@ export default function RoomPage() {
 }
 
 function RoomPageInner() {
+  const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
   const roomName = params.id as string;
@@ -99,9 +100,18 @@ function RoomPageInner() {
   if (!accessCode) {
     return (
       <main
-        className="flex items-center justify-center min-h-screen"
+        className="room-join-shell flex items-center justify-center min-h-screen"
         data-lk-theme="default"
       >
+        <div className="room-top-actions">
+          <button
+            type="button"
+            onClick={() => router.push("/")}
+            className="room-home-btn"
+          >
+            Home
+          </button>
+        </div>
         <div className="w-full max-w-sm">
           <div className="text-center mb-6">
             <h1 className="text-3xl font-bold mb-2">Beat Your Meet</h1>
@@ -153,8 +163,17 @@ function RoomPageInner() {
         <div className="hero-flares" aria-hidden="true" />
         <div className="room-prejoin-card setup-shell">
           <div className="setup-header">
-            <p className="hero-kicker">— BEATYOURMEET AI</p>
-            <h2>Join Meeting</h2>
+            <p className="hero-kicker">— BEATYOURMEET</p>
+            <div className="flex items-start justify-between gap-4">
+              <h2>Join Meeting</h2>
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="room-home-btn"
+              >
+                Home
+              </button>
+            </div>
             <p>
               Room:{" "}
               <span className="font-mono" style={{ color: "rgba(255,200,100,0.85)" }}>
@@ -223,12 +242,12 @@ function RoomPageInner() {
       video={preJoinChoices.videoEnabled}
       data-lk-theme="default"
     >
-      <MeetingRoom />
+      <MeetingRoom roomName={roomName} accessCode={accessCode} />
     </LiveKitRoom>
   );
 }
 
-function MeetingRoom() {
+function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: string }) {
   const router = useRouter();
   const room = useRoomContext();
   const senderName = room.localParticipant.identity;
@@ -248,9 +267,12 @@ function MeetingRoom() {
     try {
       const data = JSON.parse(new TextDecoder().decode(msg.payload));
       if (data.type === "agenda_state") setAgendaState(data);
-      else if (data.type === "meeting_ended") router.push("/");
+      else if (data.type === "meeting_ended" || data.type === "docs_ready") {
+        const encoded = encodeURIComponent(accessCode);
+        router.push(`/post-meeting/${roomName}?code=${encoded}`);
+      }
     } catch { /* ignore */ }
-  }, [router]);
+  }, [accessCode, roomName, router]);
 
   // Inbound chat messages (from all participants + Beat)
   const onChatData = useCallback((msg: any) => {
@@ -301,6 +323,15 @@ function MeetingRoom() {
 
   return (
     <div className="room-shell">
+      <div className="room-top-actions">
+        <button
+          type="button"
+          onClick={() => router.push("/")}
+          className="room-home-btn"
+        >
+          Home
+        </button>
+      </div>
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Video grid */}
         <div className="flex-1 relative overflow-hidden min-h-0">
