@@ -24,14 +24,14 @@ import ChatPanel from "@/components/ChatPanel";
 import type { AgendaState } from "@/components/AgendaDisplay";
 import type { ChatMessage } from "@/components/ChatPanel";
 
-type FacilitatorStyle = "chatting" | "gentle" | "moderate";
+type BeatStyle = "chatting" | "gentle" | "moderate";
 type BotStatus = "absent" | "joining" | "active" | "leaving";
-const STYLE_OPTIONS: { value: FacilitatorStyle; label: string }[] = [
+const STYLE_OPTIONS: { value: BeatStyle; label: string }[] = [
   { value: "chatting", label: "Chat" },
   { value: "gentle",   label: "Gentle" },
   { value: "moderate", label: "Moderate" },
 ];
-function normalizeStyle(s?: string): FacilitatorStyle {
+function normalizeStyle(s?: string): BeatStyle {
   if (s === "chatting" || s === "gentle" || s === "moderate") return s;
   return "moderate";
 }
@@ -258,7 +258,7 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
   const [agendaState, setAgendaState] = useState<AgendaState | null>(null);
   const [activeSidePanel, setActiveSidePanel] = useState<"agenda" | "chat" | null>("agenda");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [activeStyle, setActiveStyle] = useState<FacilitatorStyle>("moderate");
+  const [activeStyle, setActiveStyle] = useState<BeatStyle>("moderate");
   const [botStatus, setBotStatus] = useState<BotStatus>("absent");
   const [botError, setBotError] = useState<string | null>(null);
 
@@ -281,7 +281,7 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
     if (botStatus !== "joining") return;
     const timer = setTimeout(() => {
       setBotStatus("absent");
-      setBotError("Facilitator failed to join. Try again.");
+      setBotError("Beat failed to join. Try again.");
     }, 20_000);
     return () => clearTimeout(timer);
   }, [botStatus]);
@@ -375,7 +375,7 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
     room.localParticipant.publishData(payload, { reliable: true, topic: "chat" }).catch(console.error);
   }, [room, senderName]);
 
-  const handleStyleChange = useCallback((style: FacilitatorStyle) => {
+  const handleStyleChange = useCallback((style: BeatStyle) => {
     setActiveStyle(style);
     const payload = new TextEncoder().encode(JSON.stringify({ type: "set_style", style }));
     room.localParticipant.publishData(payload, { reliable: true }).catch(console.error);
@@ -452,7 +452,7 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
                         onClick={inviteBotToRoom}
                         className="w-full py-1.5 text-xs font-medium rounded-lg bg-emerald-500/25 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/40 transition-colors"
                       >
-                        Invite Facilitator
+                        Invite Beat
                       </button>
                     )}
                     {botStatus === "joining" && (
@@ -465,7 +465,7 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
                         onClick={removeBotFromRoom}
                         className="w-full py-1.5 text-xs font-medium rounded-lg bg-red-500/15 border border-red-400/20 text-red-300 hover:bg-red-500/30 transition-colors"
                       >
-                        Remove Facilitator
+                        Remove Beat
                       </button>
                     )}
                     {botStatus === "leaving" && (
@@ -485,7 +485,7 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
                   ) : (
                     <p className="text-center text-sm py-6" style={{ color: "rgba(200,210,240,0.45)" }}>
                       {botStatus === "absent" && isHost
-                        ? "Invite the facilitator to get started"
+                        ? "Invite Beat to get started"
                         : "Waiting for agent..."}
                     </p>
                   )}

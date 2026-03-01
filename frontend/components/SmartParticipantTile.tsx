@@ -107,7 +107,7 @@ export default function SmartParticipantTile({
               </svg>
               <span className="text-sm text-gray-300 font-medium">Beat</span>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 font-medium">
-                Facilitator
+                Beat
               </span>
             </div>
           </ParticipantContextIfNeeded>

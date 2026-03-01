@@ -11,7 +11,7 @@ export default function Home() {
           <p className="hero-kicker">- BEATYOURMEET</p>
           <h1 className="hero-title">BEATYOURMEET</h1>
           <p className="hero-subtitle">
-            THE AI MEETING FACILITATOR THAT KEEPS YOU ON TRACK
+            THE AI MEETING BOT, BEAT, THAT KEEPS YOU ON TRACK
           </p>
           <p className="hero-meta">
             Voice-first meeting facilitation

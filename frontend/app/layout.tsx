@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Beat Your Meet",
-  description: "AI-powered meeting facilitator that keeps your meetings on track",
+  description: "AI-powered meeting bot, Beat, that keeps your meetings on track",
 };
 
 export default function RootLayout({

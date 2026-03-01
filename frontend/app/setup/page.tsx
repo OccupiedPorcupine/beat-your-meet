@@ -329,10 +329,10 @@ export default function SetupMeeting() {
 
               <StyleSelector style={style} onSelect={setStyle} />
 
-              {/* Invite Facilitator toggle */}
+              {/* Invite Beat toggle */}
               <div className="flex items-center justify-between rounded-xl border border-white/15 bg-white/10 px-4 py-3">
                 <div>
-                  <span className="text-sm font-medium text-slate-100">Invite Facilitator</span>
+                  <span className="text-sm font-medium text-slate-100">Invite Beat</span>
                   <p className="text-xs text-slate-400 mt-0.5">
                     {inviteBot ? "Bot will join when the meeting starts" : "You can invite the bot later"}
                   </p>
