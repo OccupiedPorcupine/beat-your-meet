@@ -1,8 +1,9 @@
 """Beat Your Meet — AI Meeting Facilitator Agent.
 
 This agent joins a LiveKit room, transcribes all participants,
-monitors conversation against the agenda, and barges in when
-participants go off-topic or exceed their time box.
+and uses the LLM to naturally facilitate conversation against
+the agenda. Time warnings and transitions are driven by asyncio
+timers rather than a polling loop.
 """
 
 import asyncio
@@ -26,7 +27,6 @@ from livekit.plugins import deepgram, elevenlabs, openai, silero
 
 from monitor import MeetingState, ItemState, ItemNotes, AgendaItem
 from prompts import (
-    ASSESS_CONVERSATION_TOOL,
     BOT_INTRO_TEMPLATE,
     CHATTING_INTRO_TEMPLATE,
     CHATTING_SYSTEM_PROMPT,
@@ -34,17 +34,10 @@ from prompts import (
     FACILITATOR_SYSTEM_PROMPT,
     ITEM_SUMMARY_TOOL,
     ITEM_SUMMARY_PROMPT,
-    MONITORING_PROMPT,
     STYLE_INSTRUCTIONS,
     TIME_WARNING_TEMPLATE,
 )
 from multi_audio import MultiParticipantAudioInput
-from speech_gate import (
-    GateResult,
-    Trigger,
-    detect_silence_request,
-    evaluate as gate_evaluate,
-)
 
 # Resolve absolute path to .env so it works regardless of CWD or how Python
 # was invoked (e.g. `python main.py` vs running from the project root).
@@ -95,6 +88,23 @@ _BEAT_NAME_PATTERNS = (
     re.compile(r"\b@beat\b"),
 )
 
+_SILENCE_PHRASES = [
+    "please be quiet", "be quiet", "quiet please", "stop talking",
+    "stop interrupting", "don't interrupt", "we've got this", "we're fine",
+    "let us talk", "hold on bot", "hold on beat", "not now", "stay quiet",
+    "zip it", "shh", "shut up", "shut it", "pipe down", "hush",
+    "silence beat", "stop talking beat", "beat stop", "beat be quiet",
+    "beat shut up",
+]
+
+_OVERRIDE_PATTERNS = (
+    re.compile(r"\bkeep\s+going\b"),
+    re.compile(r"\blet'?s?\s+continue\b"),
+    re.compile(r"\bwe'?re?\s+not\s+done\b"),
+    re.compile(r"\bmore\s+time\b"),
+    re.compile(r"\bextend\b"),
+)
+
 
 @_dataclass
 class DocumentRequest:
@@ -104,7 +114,6 @@ class DocumentRequest:
 
 
 _DOC_REQUEST_PATTERNS: list[tuple[re.Pattern, str, str, str]] = [
-    # (pattern, doc_type, description, slug)
     (
         re.compile(r"\b(take|do|track|record)\s+(an?\s+)?attendance\b"),
         "attendance",
@@ -133,9 +142,6 @@ _DOC_REQUEST_PATTERNS: list[tuple[re.Pattern, str, str, str]] = [
     ),
 ]
 
-# Catch-all for freeform custom requests:
-# "Beat, keep a record of everyone's concerns"
-# "Beat, note down the budget numbers"
 _CUSTOM_DOC_PATTERN = re.compile(
     r"\b(keep\s+(a\s+)?(record|log|track|note)\s+of|"
     r"document|note\s+down|record\s+down)\b"
@@ -199,11 +205,7 @@ def _resolve_bool_env(name: str, default: bool) -> bool:
 
     logger.warning(
         "Invalid %s=%r; expected one of %s or %s. Defaulting to %s.",
-        name,
-        raw,
-        sorted(_TRUTHY),
-        sorted(_FALSEY),
-        default,
+        name, raw, sorted(_TRUTHY), sorted(_FALSEY), default,
     )
     return default
 
@@ -222,7 +224,6 @@ def _extract_latest_user_text(chat_ctx: lk_llm.ChatContext) -> str:
 
 
 def _is_time_query(text: str) -> bool:
-    """Return True if the utterance is a direct meeting-time question."""
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
@@ -230,7 +231,6 @@ def _is_time_query(text: str) -> bool:
 
 
 def _is_skip_request(text: str) -> bool:
-    """Return True if the utterance is a request to skip the current agenda item."""
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
@@ -238,7 +238,6 @@ def _is_skip_request(text: str) -> bool:
 
 
 def _is_end_meeting_request(text: str) -> bool:
-    """Return True if the utterance signals the meeting should end."""
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
@@ -246,15 +245,25 @@ def _is_end_meeting_request(text: str) -> bool:
 
 
 def _is_addressed_to_beat(text: str) -> bool:
-    """Return True when the utterance explicitly addresses Beat by name."""
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
     return any(pattern.search(normalized) for pattern in _BEAT_NAME_PATTERNS)
 
 
+def _detect_silence_request(text: str) -> bool:
+    lowered = text.strip().lower()
+    return any(phrase in lowered for phrase in _SILENCE_PHRASES)
+
+
+def _is_override_request(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _OVERRIDE_PATTERNS)
+
+
 def _detect_doc_request(text: str) -> DocumentRequest | None:
-    """Return a DocumentRequest if the utterance is asking Beat to produce a document."""
     normalized = " ".join(text.lower().split())
     if not normalized:
         return None
@@ -272,7 +281,6 @@ def _detect_doc_request(text: str) -> DocumentRequest | None:
 
 
 def _format_duration_for_tts(minutes: float) -> str:
-    """Format minute float as concise speech-friendly duration text."""
     total_seconds = max(0, int(round(minutes * 60)))
     whole_minutes, seconds = divmod(total_seconds, 60)
 
@@ -288,7 +296,6 @@ def _format_duration_for_tts(minutes: float) -> str:
 
 
 def _format_time_status_for_tts(status: dict) -> str:
-    """Create a concise deterministic spoken response for time queries."""
     if not status.get("meeting_started", False):
         return "The meeting clock has not started yet."
 
@@ -319,9 +326,172 @@ def _format_time_status_for_tts(status: dict) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# AgendaTimers — event-driven time management
+# ---------------------------------------------------------------------------
+
+
+class AgendaTimers:
+    """Manages asyncio timers for agenda item warnings and transitions.
+
+    Replaces the polling-based monitoring loop with precise one-shot timers.
+    """
+
+    def __init__(
+        self,
+        session: AgentSession,
+        state: MeetingState,
+        room: rtc.Room,
+        agent: Agent,
+        mistral_client: "Mistral",
+    ) -> None:
+        self._session = session
+        self._state = state
+        self._room = room
+        self._agent = agent
+        self._mistral_client = mistral_client
+        self._warning_handle: asyncio.TimerHandle | None = None
+        self._overtime_handle: asyncio.TimerHandle | None = None
+        self._heartbeat_task: asyncio.Task | None = None
+
+    def start_item_timers(self) -> None:
+        """Set timers for the current agenda item's warning and overtime."""
+        self.cancel()
+        item = self._state.current_item
+        if item is None or self._state.style == "chatting":
+            return
+
+        duration_seconds = item.duration_minutes * 60
+        loop = asyncio.get_event_loop()
+
+        # Warning at 80% of allocated time
+        warning_delay = duration_seconds * 0.8
+        if warning_delay > 0:
+            self._warning_handle = loop.call_later(
+                warning_delay,
+                lambda: _bg_task(self._on_warning(), name="timer_warning"),
+            )
+
+        # Overtime at 100% of allocated time
+        if duration_seconds > 0:
+            self._overtime_handle = loop.call_later(
+                duration_seconds,
+                lambda: _bg_task(self._on_overtime(), name="timer_overtime"),
+            )
+
+        logger.info(
+            "Timers set for '%s': warning=%.0fs, overtime=%.0fs",
+            item.topic, warning_delay, duration_seconds,
+        )
+
+    def extend(self, grace_seconds: float = 120.0) -> None:
+        """Cancel the overtime timer and reschedule it after a grace period."""
+        if self._overtime_handle:
+            self._overtime_handle.cancel()
+            self._overtime_handle = None
+        loop = asyncio.get_event_loop()
+        self._overtime_handle = loop.call_later(
+            grace_seconds,
+            lambda: _bg_task(self._on_overtime(), name="timer_overtime_extended"),
+        )
+        logger.info("Override: overtime timer extended by %.0fs", grace_seconds)
+
+    def cancel(self) -> None:
+        """Cancel all pending timers for the current item."""
+        if self._warning_handle:
+            self._warning_handle.cancel()
+            self._warning_handle = None
+        if self._overtime_handle:
+            self._overtime_handle.cancel()
+            self._overtime_handle = None
+
+    def start_heartbeat(self) -> None:
+        """Start a 60s heartbeat that sends agenda state to the frontend."""
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            return
+        self._heartbeat_task = _bg_task(self._heartbeat_loop(), name="heartbeat")
+
+    def stop(self) -> None:
+        """Cancel all timers and stop the heartbeat."""
+        self.cancel()
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+
+    async def _on_warning(self) -> None:
+        """Fired at 80% of the item's allocated time."""
+        item = self._state.current_item
+        if item is None or item.state == ItemState.COMPLETED:
+            return
+
+        item.state = ItemState.WARNING
+        remaining = max(0, item.duration_minutes - self._state.elapsed_minutes)
+        warning = TIME_WARNING_TEMPLATE.format(
+            remaining=f"{remaining:.0f}",
+            topic=item.topic,
+        )
+
+        if self._state.can_intervene():
+            await self._session.say(warning, allow_interruptions=True)
+            self._state.record_intervention()
+            logger.info("Time warning delivered for '%s'", item.topic)
+
+        await _send_agenda_state(self._room, self._state)
+
+    async def _on_overtime(self) -> None:
+        """Fired at 100% of the item's allocated time — auto-advance."""
+        item = self._state.current_item
+        if item is None or item.state == ItemState.COMPLETED:
+            return
+
+        item.state = ItemState.OVERTIME
+        prev_index = self._state.current_item_index
+        completed_item = self._state.current_item
+
+        next_item = self._state.advance_to_next()
+
+        if next_item:
+            transition = AGENDA_TRANSITION_TEMPLATE.format(
+                next_item=next_item.topic,
+                duration=int(next_item.duration_minutes),
+            )
+            await self._session.say(transition, allow_interruptions=True)
+            self._state.record_intervention()
+            # Start timers for the new item
+            self.start_item_timers()
+        else:
+            # No more items — wrap up
+            await self._session.say(
+                "That wraps up our agenda. Great meeting, everyone!",
+                allow_interruptions=True,
+            )
+            self._state.record_intervention()
+            await _end_meeting(self._room, self._state, mistral_client=self._mistral_client)
+
+        # Summarise the completed item
+        if completed_item:
+            transcript = self._state.get_item_transcript(prev_index)
+            notes = await _summarize_item(self._mistral_client, completed_item, transcript)
+            self._state.meeting_notes.append(notes)
+            await _refresh_agent_instructions(self._agent, self._state)
+
+        await _send_agenda_state(self._room, self._state)
+
+    async def _heartbeat_loop(self) -> None:
+        """Send agenda state to the frontend every 60s for clock drift correction."""
+        while not self._state.meeting_end_triggered:
+            await asyncio.sleep(60)
+            if not self._state.meeting_end_triggered:
+                await _send_agenda_state(self._room, self._state)
+
+
+# ---------------------------------------------------------------------------
+# BeatFacilitatorAgent
+# ---------------------------------------------------------------------------
+
+
 class BeatFacilitatorAgent(Agent):
-    """Agent wrapper that serves deterministic time answers without LLM calls
-    and handles skip / end-meeting commands directly."""
+    """Agent that handles deterministic commands (time, skip, end) without
+    LLM calls and delegates everything else to the main LLM."""
 
     def __init__(
         self,
@@ -329,12 +499,14 @@ class BeatFacilitatorAgent(Agent):
         meeting_state: MeetingState,
         deterministic_time_queries_enabled: bool,
         room: "rtc.Room | None" = None,
+        timers: "AgendaTimers | None" = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._meeting_state = meeting_state
         self._deterministic_time_queries_enabled = deterministic_time_queries_enabled
         self._room = room
+        self._timers = timers
         logger.info(
             "BeatFacilitatorAgent registered %d tools: %s",
             len(self.tools),
@@ -344,58 +516,57 @@ class BeatFacilitatorAgent(Agent):
     async def llm_node(self, chat_ctx, tools, model_settings):
         latest_user_text = _extract_latest_user_text(chat_ctx)
         is_addressed_to_beat = _is_addressed_to_beat(latest_user_text)
-        is_time_query = _is_time_query(latest_user_text)
-        is_skip_request = _is_skip_request(latest_user_text)
-        is_end_meeting_request = _is_end_meeting_request(latest_user_text)
 
-        # Only require explicit "Beat" addressing when silenced by a participant
-        silence_active = (
-            self._meeting_state.silence_requested_until > 0
-            and time.time() < self._meeting_state.silence_requested_until
-        )
-        if silence_active and not is_addressed_to_beat:
+        # Silence mode: only respond when explicitly addressed
+        if self._meeting_state.is_silenced and not is_addressed_to_beat:
             remaining = max(0, self._meeting_state.silence_requested_until - time.time())
-            logger.info("silence_mode: suppressing response (%.0fs remaining, user=%r)", remaining, latest_user_text[:60])
+            logger.info("silence_mode: suppressing response (%.0fs remaining)", remaining)
             return
 
-        if is_time_query and self._deterministic_time_queries_enabled:
+        # Deterministic time query
+        if _is_time_query(latest_user_text) and self._deterministic_time_queries_enabled:
             status = self._meeting_state.get_time_status()
-            logger.info(
-                "time_query_detected=true time_query_path=deterministic total_meeting_minutes=%.3f current_item_remaining_minutes=%.3f",
-                float(status.get("total_meeting_minutes", 0.0)),
-                float(status.get("current_item_remaining_minutes", 0.0)),
-            )
+            logger.info("time_query: deterministic response")
             yield _format_time_status_for_tts(status)
             return
 
-        if is_time_query:
-            logger.info("time_query_detected=true time_query_path=llm")
-
-        # --- Skip current agenda item ---
-        if is_skip_request and self._room:
+        # Skip current agenda item
+        if _is_skip_request(latest_user_text) and self._room:
             state = self._meeting_state
             current_topic = state.current_item.topic if state.current_item else None
             if current_topic:
+                if self._timers:
+                    self._timers.cancel()
                 next_item = state.advance_to_next()
                 _bg_task(_send_agenda_state(self._room, state), name="send_agenda_state_skip")
                 _bg_task(_refresh_agent_instructions(self, state), name="refresh_instructions_skip")
                 state.record_intervention()
                 if next_item:
-                    logger.info("skip_request: skipped '%s', moving to '%s'", current_topic, next_item.topic)
+                    if self._timers:
+                        self._timers.start_item_timers()
+                    logger.info("skip: '%s' → '%s'", current_topic, next_item.topic)
                     yield f"Sure, skipping {current_topic}. Moving on to {next_item.topic}."
                 else:
-                    logger.info("skip_request: skipped '%s', no more items", current_topic)
+                    logger.info("skip: '%s' was the last item", current_topic)
                     yield f"Sure, skipping {current_topic}. That was the last agenda item — great meeting everyone!"
                 return
 
-        # --- End meeting ---
-        if is_end_meeting_request and self._room:
+        # End meeting
+        if _is_end_meeting_request(latest_user_text) and self._room:
             logger.info("end_meeting_request detected")
+            if self._timers:
+                self._timers.stop()
             _bg_task(_end_meeting(self._room, self._meeting_state), name="end_meeting_voice")
             yield "Thanks everyone, it's been a great meeting! Take care and goodbye!"
             return
 
-        # --- Document request ---
+        # Override ("keep going") — extend the overtime timer
+        if _is_override_request(latest_user_text) and self._timers:
+            self._timers.extend()
+            yield "Got it, I'll give you more time on this one!"
+            return
+
+        # Document request
         doc_req = _detect_doc_request(latest_user_text)
         if doc_req and self._room:
             existing_slugs = {r.slug for r in self._meeting_state.doc_requests}
@@ -405,9 +576,7 @@ class BeatFacilitatorAgent(Agent):
             yield "Got it — I'll prepare that document at the end of the meeting."
             return
 
-        if not is_time_query:
-            logger.debug("time_query_detected=false")
-
+        # Default: let the LLM handle it
         logger.info("llm_node: calling LLM addressed_to_beat=%s text=%r", is_addressed_to_beat, latest_user_text[:80])
         try:
             async for chunk in super().llm_node(chat_ctx, tools, model_settings):
@@ -504,6 +673,11 @@ class BeatFacilitatorAgent(Agent):
         }
 
 
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+
 async def entrypoint(ctx: JobContext):
     try:
         logger.info("Explicit dispatch accepted — joining room %s", ctx.room.name)
@@ -520,7 +694,6 @@ async def entrypoint(ctx: JobContext):
         if room_metadata:
             metadata = json.loads(room_metadata)
         else:
-            # Fallback: no agenda configured, use defaults
             metadata = {
                 "agenda": {
                     "title": "Meeting",
@@ -549,6 +722,10 @@ async def entrypoint(ctx: JobContext):
             base_url="https://api.mistral.ai/v1",
         )
 
+        # Shared Mistral client for item summaries and chat @beat responses
+        from mistralai import Mistral as _Mistral
+        mistral_chat_client = _Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+
         # Build system instructions
         if meeting_state.style == "chatting":
             instructions = CHATTING_SYSTEM_PROMPT
@@ -560,12 +737,9 @@ async def entrypoint(ctx: JobContext):
                 ),
                 **ctx_data,
             )
+
         deterministic_time_queries_enabled = _resolve_bool_env(
             "DETERMINISTIC_TIME_QUERIES", default=True
-        )
-        logger.info(
-            "Deterministic time query path enabled=%s",
-            deterministic_time_queries_enabled,
         )
 
         # Create the voice agent and session
@@ -575,9 +749,7 @@ async def entrypoint(ctx: JobContext):
             vad=silero.VAD.load(),
             stt=deepgram.STT(model="nova-2", language="en"),
             llm=mistral_llm,
-            tts=elevenlabs.TTS(
-                model="eleven_turbo_v2_5",
-            ),
+            tts=elevenlabs.TTS(model="eleven_turbo_v2_5"),
             meeting_state=meeting_state,
             deterministic_time_queries_enabled=deterministic_time_queries_enabled,
             room=ctx.room,
@@ -585,10 +757,17 @@ async def entrypoint(ctx: JobContext):
 
         session = AgentSession()
 
-        # Track transcriptions for monitoring.
-        # Audio is mixed from all participants, so we can't attribute speech
-        # to a specific speaker. Use "participant" as a generic label — the
-        # transcript is only used for tangent detection, not per-speaker tracking.
+        # Create the timer system
+        timers = AgendaTimers(
+            session=session,
+            state=meeting_state,
+            room=ctx.room,
+            agent=agent,
+            mistral_client=mistral_chat_client,
+        )
+        agent._timers = timers
+
+        # Track transcriptions
         @session.on("user_input_transcribed")
         def on_speech(event):
             if not event.is_final:
@@ -596,14 +775,10 @@ async def entrypoint(ctx: JobContext):
             remote = list(ctx.room.remote_participants.values())
             speaker = remote[0].identity if len(remote) == 1 else "participant"
             meeting_state.add_transcript(speaker, event.transcript)
-            if detect_silence_request(event.transcript):
+            if _detect_silence_request(event.transcript):
                 meeting_state.update_silence_signal()
-                logger.info("[gate] Silence signal set by %s", speaker)
+                logger.info("[silence] Silence signal set by %s", speaker)
             logger.info(f"[{speaker}] {event.transcript}")
-
-        # Shared Mistral client for chat @beat responses
-        from mistralai import Mistral as _Mistral
-        mistral_chat_client = _Mistral(api_key=os.environ["MISTRAL_API_KEY"])
 
         @ctx.room.on("data_received")
         def on_data_received(data: rtc.DataPacket):
@@ -618,10 +793,16 @@ async def entrypoint(ctx: JobContext):
                     meeting_state.style = msg["style"]
                     logger.info(f"Style changed to {msg['style']}")
                     _bg_task(_refresh_agent_instructions(agent, meeting_state), name="refresh_instructions_style")
+                    # Restart timers — chatting mode disables them
+                    if msg["style"] == "chatting":
+                        timers.cancel()
+                    else:
+                        timers.start_item_timers()
 
                 # End meeting triggered from UI
                 elif msg.get("type") == "end_meeting":
                     logger.info("end_meeting signal received from participant")
+                    timers.stop()
                     _bg_task(
                         _end_meeting(ctx.room, meeting_state, mistral_client=mistral_chat_client),
                         name="end_meeting_ui",
@@ -631,7 +812,7 @@ async def entrypoint(ctx: JobContext):
                 elif msg.get("type") == "chat_message" and not msg.get("is_agent"):
                     text = msg.get("text", "")
                     if text.strip().lower().startswith("@beat"):
-                        question = text.strip()[5:].strip()  # strip "@beat"
+                        question = text.strip()[5:].strip()
                         sender = msg.get("sender", "someone")
                         _bg_task(
                             _handle_chat_mention(
@@ -643,23 +824,21 @@ async def entrypoint(ctx: JobContext):
                 logger.exception("Failed to handle data_received")
 
         # Use a custom audio input that mixes ALL participants' audio
-        # instead of the default RoomIO which only listens to one participant.
         multi_audio = MultiParticipantAudioInput(ctx.room)
         session.input.audio = multi_audio
 
-        # Start the session — RoomIO will skip its own audio input since
-        # session.input.audio is already set.
+        # Start the session
         logger.info("Starting agent session...")
         await session.start(agent, room=ctx.room)
 
         # Start the meeting
         meeting_state.start_meeting()
-        # Rebuild instructions now that the meeting clock is running.
-        # This prevents stale initial context such as "not started".
-        await _refresh_agent_instructions(
-            agent,
-            meeting_state,
-        )
+        await _refresh_agent_instructions(agent, meeting_state)
+
+        # Start timers for the first agenda item
+        if meeting_state.style != "chatting":
+            timers.start_item_timers()
+        timers.start_heartbeat()
 
         # Deliver bot introduction
         if meeting_state.style == "chatting":
@@ -671,29 +850,23 @@ async def entrypoint(ctx: JobContext):
                 total_minutes=int(meeting_state.total_scheduled_minutes),
                 first_item=first_item.topic if first_item else "the discussion",
             )
-        await asyncio.sleep(2)  # Brief pause before intro
-        await _guarded_say(session, meeting_state, intro, Trigger.INTRO)
+        await asyncio.sleep(2)
+        await session.say(intro, allow_interruptions=True)
+        meeting_state.record_intervention()
 
-        # Send initial agenda state to frontend via data channel
+        # Send initial agenda state to frontend
         await _send_agenda_state(ctx.room, meeting_state)
-
-        # Start the monitoring loop — store reference to prevent garbage collection
-        logger.info("Starting monitoring loop...")
-        _monitor_task = asyncio.create_task(
-            _monitoring_loop(session, ctx, meeting_state, agent)
-        )
-
-        def _on_monitor_done(t: asyncio.Task) -> None:
-            if not t.cancelled() and t.exception() is not None:
-                logger.error("Monitoring loop exited with an error", exc_info=t.exception())
-
-        _monitor_task.add_done_callback(_on_monitor_done)
 
         logger.info("Beat Your Meet agent started successfully")
 
     except Exception:
         logger.exception("Agent entrypoint crashed")
         raise
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
 
 async def _summarize_item(
@@ -734,7 +907,6 @@ async def _summarize_item(
             )
     except Exception as e:
         logger.error(f"Item summarization failed: {e}")
-    # Fallback: empty notes
     return ItemNotes(item_id=item.id, topic=item.topic)
 
 
@@ -761,7 +933,7 @@ async def _handle_chat_mention(
         except Exception:
             logger.exception("Failed to publish @beat chat response")
 
-    # --- Skip current agenda item ---
+    # Skip current agenda item
     if _is_skip_request(question):
         current_topic = state.current_item.topic if state.current_item else None
         if current_topic:
@@ -770,39 +942,36 @@ async def _handle_chat_mention(
             await _refresh_agent_instructions(agent, state)
             state.record_intervention()
             if next_item:
-                logger.info("chat skip: '%s' → '%s'", current_topic, next_item.topic)
                 await _reply(f"Skipping {current_topic}. Moving on to {next_item.topic}.")
             else:
-                logger.info("chat skip: '%s' was the last item", current_topic)
                 await _reply(f"Skipping {current_topic}. That was the last agenda item — great meeting!")
         else:
             await _reply("There are no active agenda items to skip.")
         return
 
-    # --- End meeting ---
+    # End meeting
     if _is_end_meeting_request(question):
         logger.info("chat end_meeting request from %s", sender)
         _bg_task(_end_meeting(room, state, mistral_client=client), name="end_meeting_chat")
         await _reply("Thanks everyone, it's been a great meeting! Goodbye!")
         return
 
-    # --- Time query (deterministic, no LLM needed) ---
+    # Time query (deterministic)
     if _is_time_query(question):
         status = state.get_time_status()
         await _reply(_format_time_status_for_tts(status))
         return
 
-    # --- Document request ---
+    # Document request
     doc_req = _detect_doc_request(question)
     if doc_req:
         existing_slugs = {r.slug for r in state.doc_requests}
         if doc_req.slug not in existing_slugs:
             state.doc_requests.append(doc_req)
-            logger.info("doc_request queued via chat: type=%s slug=%s", doc_req.doc_type, doc_req.slug)
         await _reply("Got it — I'll prepare that document at the end of the meeting.")
         return
 
-    # --- General question → Mistral ---
+    # General question → Mistral
     item = state.current_item
     ctx_summary = (
         f"Meeting style: {state.style}. "
@@ -859,29 +1028,6 @@ async def _refresh_agent_instructions(
     logger.info(f"Agent instructions refreshed (style={state.style})")
 
 
-async def _guarded_say(
-    session: AgentSession,
-    state: MeetingState,
-    candidate_text: str,
-    trigger: str,
-    tangent_confidence: float = 0.0,
-) -> bool:
-    ctx = state.build_meeting_context(tangent_confidence=tangent_confidence)
-    result: GateResult = gate_evaluate(candidate_text, trigger, ctx)
-    logger.info(
-        "[gate] trigger=%s action=%s confidence=%.2f reason=%s",
-        trigger,
-        result.action,
-        result.confidence,
-        result.reason,
-    )
-    if result.action == "speak":
-        await session.say(result.text_for_tts, allow_interruptions=True)
-        state.record_intervention()
-        return True
-    return False
-
-
 async def _end_meeting(
     room: rtc.Room,
     state: MeetingState,
@@ -906,7 +1052,6 @@ async def _end_meeting(
     try:
         if mistral_client is None:
             from mistralai import Mistral as _Mistral
-
             mistral_client = _Mistral(api_key=os.environ["MISTRAL_API_KEY"])
         await generate_and_upload_all_docs(
             mistral_client=mistral_client,
@@ -919,181 +1064,6 @@ async def _end_meeting(
         logger.info("docs_ready signal sent for room %s", room_id)
     except Exception:
         logger.exception("Document generation/upload failed")
-
-
-async def _monitoring_loop(
-    session: AgentSession,
-    ctx: JobContext,
-    state: MeetingState,
-    agent: Agent,
-):
-    """Periodically check if conversation is on-track and handle time transitions."""
-
-    # Mistral Small for fast monitoring checks
-    from mistralai import Mistral
-
-    mistral_client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
-
-    check_interval = 15  # seconds between checks
-
-    while True:
-        await asyncio.sleep(check_interval)
-
-        try:
-            if state.meeting_end_triggered:
-                break
-            # In chatting mode skip all facilitation — just keep the UI in sync.
-            if state.style == "chatting":
-                await _refresh_agent_instructions(agent, state)
-                await _send_agenda_state(ctx.room, state)
-                continue
-
-            # Check if meeting is over (no more items)
-            if state.current_item is None:
-                try:
-                    await _guarded_say(
-                        session,
-                        state,
-                        "That wraps up our agenda. Great meeting, everyone!",
-                        Trigger.WRAP_UP,
-                    )
-                except Exception:
-                    logger.exception("Failed to deliver meeting wrap-up")
-                await _end_meeting(ctx.room, state, mistral_client=mistral_client)
-                break
-
-            # Check time-based state transitions
-            new_state = state.check_time_state()
-
-            if new_state == ItemState.WARNING:
-                remaining = max(
-                    0,
-                    state.current_item.duration_minutes - state.elapsed_minutes,
-                )
-                warning = TIME_WARNING_TEMPLATE.format(
-                    remaining=f"{remaining:.0f}",
-                    topic=state.current_item.topic,
-                )
-                if state.can_intervene():
-                    try:
-                        await _guarded_say(
-                            session,
-                            state,
-                            warning,
-                            Trigger.TIME_WARNING,
-                        )
-                    except Exception:
-                        logger.exception("Failed to deliver time warning")
-
-            elif new_state == ItemState.OVERTIME:
-                # Capture the completed item before advancing
-                prev_index = state.current_item_index
-                completed_item = state.current_item
-
-                # Auto-advance to next item
-                next_item = state.advance_to_next()
-                if next_item:
-                    transition = AGENDA_TRANSITION_TEMPLATE.format(
-                        next_item=next_item.topic,
-                        duration=int(next_item.duration_minutes),
-                    )
-                    try:
-                        await _guarded_say(
-                            session,
-                            state,
-                            transition,
-                            Trigger.TRANSITION,
-                        )
-                    except Exception:
-                        logger.exception("Failed to deliver agenda transition")
-
-                # Summarise the completed item and refresh agent instructions
-                if completed_item:
-                    transcript = state.get_item_transcript(prev_index)
-                    notes = await _summarize_item(mistral_client, completed_item, transcript)
-                    state.meeting_notes.append(notes)
-                    await _refresh_agent_instructions(agent, state)
-
-                await _send_agenda_state(ctx.room, state)
-                continue
-
-            # Check for tangent detection
-            transcript = state.get_recent_transcript(seconds=60)
-            if transcript and state.can_intervene_for_tangent():
-                assessment = await _check_tangent(
-                    mistral_client, state, transcript
-                )
-                if assessment:
-                    spoken = assessment.get("spoken_response", "")
-                    confidence = assessment.get("confidence", 0.0)
-                    if spoken:
-                        try:
-                            await _guarded_say(
-                                session,
-                                state,
-                                spoken,
-                                Trigger.TANGENT,
-                                tangent_confidence=confidence,
-                            )
-                        except Exception:
-                            logger.exception("Failed to deliver tangent intervention")
-
-            # Refresh LLM system prompt so time context never goes stale
-            await _refresh_agent_instructions(agent, state)
-
-            # Send updated state to frontend
-            await _send_agenda_state(ctx.room, state)
-
-        except Exception:
-            logger.exception("Monitoring loop iteration failed")
-
-
-async def _check_tangent(
-    client: "Mistral",
-    state: MeetingState,
-    transcript: str,
-) -> dict | None:
-    """Use Mistral Small to quickly assess if conversation is on-topic."""
-    item = state.current_item
-    if not item:
-        return None
-
-    try:
-        response = await client.chat.complete_async(
-            model="mistral-small-latest",
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"You are monitoring a live meeting. Bot style: {state.style}. "
-                    f"Current item elapsed: {state.elapsed_minutes:.1f} of {item.duration_minutes} min. "
-                    f"Meeting overtime so far: {state.meeting_overtime:.1f} min.",
-                },
-                {
-                    "role": "user",
-                    "content": MONITORING_PROMPT.format(
-                        current_topic=item.topic,
-                        topic_description=item.description,
-                        recent_transcript=transcript,
-                    ),
-                },
-            ],
-            tools=[ASSESS_CONVERSATION_TOOL],
-            tool_choice="any",
-            temperature=0.1,
-            max_tokens=256,
-        )
-
-        if response.choices[0].message.tool_calls:
-            args = json.loads(
-                response.choices[0].message.tool_calls[0].function.arguments
-            )
-            logger.info(f"Tangent check: {args.get('status')} (confidence: {args.get('confidence', 0):.2f})")
-            return args
-
-    except Exception as e:
-        logger.error(f"Tangent check failed: {e}")
-
-    return None
 
 
 async def _send_agenda_state(room: rtc.Room, state: MeetingState):
@@ -1142,12 +1112,7 @@ async def _send_agenda_state(room: rtc.Room, state: MeetingState):
 
 
 async def request_fnc(req: JobRequest) -> None:
-    """Only accept the job if the room's metadata has invite_bot=True.
-
-    LiveKit auto-dispatches a job to every registered worker when a room is
-    created.  We check the room metadata written by the server to decide
-    whether the host actually wanted the facilitator.
-    """
+    """Only accept the job if the room's metadata has invite_bot=True."""
     metadata_str = req.room.metadata
     logger.info(
         "request_fnc called — room=%s, agent_name=%s, metadata=%s",
@@ -1166,7 +1131,6 @@ async def request_fnc(req: JobRequest) -> None:
         except json.JSONDecodeError:
             logger.warning("Failed to parse room metadata as JSON")
 
-    # No metadata or invite_bot is not True — decline
     logger.info("invite_bot not True → REJECTING job for room %s", req.room.name)
     await req.reject()
 

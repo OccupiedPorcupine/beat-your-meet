@@ -22,12 +22,8 @@ with their approved agenda and time allocations.
 Agenda:
 {agenda_json}
 
-Meeting started at: {start_time}
-Current time: {current_time}
-Current agenda item: {current_item} (allocated: {allocated_minutes} min, elapsed: {elapsed_minutes:.1f} min)
-Total meeting elapsed: {total_meeting_minutes:.1f} min
+Current agenda item: {current_item} (allocated: {allocated_minutes} min)
 Remaining items: {remaining_items}
-Total meeting overtime so far: {meeting_overtime:.1f} minutes
 Bot style: {style}
 
 ## Meeting Memory (completed items)
@@ -39,12 +35,7 @@ Bot style: {style}
 1. TANGENT DETECTED: The conversation has clearly and sustainably left the agenda — not a brief
    detour, not background context, not a related problem. Only when the discussion has fully
    disconnected from the meeting's goals for more than ~30 seconds.
-2. TIME EXCEEDED: The current item has exceeded its allocated time.
-3. DIRECT ADDRESS: A participant calls you by name ("Beat", "Hey Beat", "Beat,").
-
-### Time question accuracy:
-- Runtime deterministic handling may answer direct time/duration questions using live meeting state.
-- If runtime timing values are unavailable, briefly say you are unsure instead of guessing.
+2. DIRECT ADDRESS: A participant calls you by name ("Beat", "Hey Beat", "Beat,").
 
 ### Tools available:
 You have tools to look up live meeting data. USE THEM when participants ask questions:
@@ -76,72 +67,6 @@ quiet period expires. During that period, you only respond when explicitly calle
 Keep responses SHORT (1-2 sentences max). You are interrupting a conversation —
 be concise and direct. Never monologue.
 """
-
-MONITORING_PROMPT = """Analyze the latest transcript segment and determine if the conversation needs facilitation.
-
-## Current Agenda Item
-Topic: {current_topic}
-Description: {topic_description}
-
-## Recent Transcript (last 60 seconds)
-{recent_transcript}
-
-Assess the conversation using the assess_conversation tool.
-
-Productive meetings need flexibility. Only flag a tangent when the conversation has clearly
-and SUSTAINABLY drifted away from the meeting's goals — not for brief or connected detours.
-
-NOT a tangent (do NOT intervene):
-- Background context or related problems that inform the current topic
-- An anecdote or example that illustrates a point about the agenda item
-- Briefly raising something that will be relevant later in the agenda
-- A clarifying question, even if it touches a different area
-- A quick aside or joke (under 2 sentences)
-- Discussing a root cause or side effect of the current topic
-
-IS a tangent (consider intervening — but only if sustained for >30 seconds):
-- A conversation that has moved entirely to a subject with no connection to the current item or meeting
-- Personal matters or social chat that has replaced the meeting discussion
-- Revisiting a completed agenda item at length without a clear reason
-
-Only set high confidence (>0.7) when you are certain the conversation has fully left the agenda
-and there is no plausible productive connection to the current topic.
-When genuinely unsure, default to on_topic — err on the side of letting the conversation flow.
-
-If intervention IS warranted, be warm and acknowledge what was said before gently redirecting.
-Example: "Love the energy! Let's make sure we get to {current_topic} while we have the time — it's an important one."
-"""
-
-ASSESS_CONVERSATION_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "assess_conversation",
-        "description": "Assess whether the current conversation is on-topic relative to the agenda",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "enum": ["on_topic", "drifting", "off_topic", "time_warning"],
-                    "description": "Assessment of current conversation state",
-                },
-                "confidence": {
-                    "type": "number",
-                    "description": "0.0 to 1.0 confidence in assessment",
-                },
-                "should_speak": {
-                    "type": "boolean",
-                    "description": "Whether the bot should speak up",
-                },
-                "spoken_response": {
-                    "type": "string",
-                    "description": "What to say if should_speak is true. Keep to 1-2 sentences.",
-                },
-            },
-            "required": ["status", "confidence", "should_speak"],
-        },
-    },
-}
 
 ITEM_SUMMARY_TOOL = {
     "type": "function",

@@ -1,4 +1,4 @@
-"""Agenda state machine and conversation monitoring."""
+"""Agenda state tracking and meeting bookkeeping."""
 
 import json
 import time
@@ -12,7 +12,6 @@ class ItemState(Enum):
     ACTIVE = "active"
     WARNING = "warning"
     OVERTIME = "overtime"
-    EXTENDED = "extended"
     COMPLETED = "completed"
 
 
@@ -45,21 +44,13 @@ class MeetingState:
     meeting_start_time: float | None = None
     meeting_overtime: float = 0.0
     last_intervention_time: float = 0.0
-    last_override_time: float = 0.0
     silence_requested_until: float = 0.0
-    override_grace_seconds: float = 120.0
     transcript_buffer: list[dict] = field(default_factory=list)
     item_transcripts: dict[int, list[dict]] = field(default_factory=dict)
     meeting_notes: list[ItemNotes] = field(default_factory=list)
     doc_requests: list = field(default_factory=list)
     participants_seen: dict = field(default_factory=dict)
     meeting_end_triggered: bool = False
-
-    # Tangent tolerance per style (seconds). "chatting" disables tangent checks entirely.
-    TANGENT_TOLERANCE = {
-        "gentle": 120,
-        "moderate": 60,
-    }
 
     INTERVENTION_COOLDOWN = 30  # seconds between interventions
 
@@ -120,32 +111,11 @@ class MeetingState:
     def total_scheduled_minutes(self) -> float:
         return sum(item.duration_minutes for item in self.items)
 
-    def check_time_state(self) -> ItemState | None:
-        """Check if the current item needs a state transition based on time.
-        Returns the new state if a transition occurred, None otherwise."""
-        item = self.current_item
-        if item is None or item.state == ItemState.COMPLETED:
-            return None
-
-        elapsed = self.elapsed_minutes
-        allocated = item.duration_minutes
-        pct = elapsed / allocated if allocated > 0 else 1.0
-
-        old_state = item.state
-
-        if pct >= 1.0 and item.state not in (ItemState.OVERTIME, ItemState.EXTENDED):
-            item.state = ItemState.OVERTIME
-        elif pct >= 0.8 and item.state == ItemState.ACTIVE:
-            item.state = ItemState.WARNING
-
-        return item.state if item.state != old_state else None
-
     def advance_to_next(self) -> AgendaItem | None:
         """Complete current item and move to the next one.
         Returns the new current item, or None if meeting is over."""
         item = self.current_item
         if item:
-            # Track overtime for this item
             elapsed = self.elapsed_minutes
             overrun = max(0, elapsed - item.duration_minutes)
             self.meeting_overtime += overrun
@@ -160,65 +130,22 @@ class MeetingState:
             return next_item
         return None
 
-    def handle_override(self):
-        """Host says 'keep going' — suppress bot for grace period."""
-        item = self.current_item
-        if item:
-            item.state = ItemState.EXTENDED
-        self.last_override_time = time.time()
+    def can_intervene(self) -> bool:
+        """Check if enough time has passed since last intervention."""
+        return (time.time() - self.last_intervention_time) > self.INTERVENTION_COOLDOWN
 
-    def is_in_override_grace(self) -> bool:
-        """Check if we're still in the grace period after a host override."""
-        if self.last_override_time == 0:
-            return False
-        return (time.time() - self.last_override_time) < self.override_grace_seconds
+    def record_intervention(self):
+        """Record that the bot just spoke."""
+        self.last_intervention_time = time.time()
 
     def update_silence_signal(self):
         """Called when a silence phrase is detected in participant speech."""
         self.silence_requested_until = time.time() + 300  # 5 minutes
 
-    def build_meeting_context(self, tangent_confidence: float = 0.0) -> "MeetingContext":
-        """Build a MeetingContext snapshot for speech gate evaluation."""
-        from speech_gate import MeetingContext
-
-        item = self.current_item
-        return MeetingContext(
-            style=self.style,
-            current_topic=item.topic if item else "",
-            current_item_state=item.state.value if item else "none",
-            elapsed_minutes=self.elapsed_minutes,
-            allocated_minutes=item.duration_minutes if item else 0.0,
-            meeting_overtime=self.meeting_overtime,
-            recent_transcript=self.get_recent_transcript(seconds=60),
-            in_override_grace=self.is_in_override_grace(),
-            silence_until=self.silence_requested_until,
-            tangent_confidence=tangent_confidence,
-            items_remaining=len(self.remaining_items),
-        )
-
-    def can_intervene(self) -> bool:
-        """Check if enough time has passed since last intervention."""
-        if self.is_in_override_grace():
-            return False
-        return (time.time() - self.last_intervention_time) > self.INTERVENTION_COOLDOWN
-
-    def can_intervene_for_tangent(self) -> bool:
-        """Check if enough time has passed since last intervention, using style-specific tolerance.
-
-        gentle=60s, moderate=30s. "chatting" mode never triggers tangent checks.
-        The tolerance is the minimum number of seconds that must have elapsed since
-        the last intervention before the bot will speak up about a tangent.
-        """
-        if self.style == "chatting":
-            return False
-        if self.is_in_override_grace():
-            return False
-        tolerance = self.TANGENT_TOLERANCE.get(self.style, self.INTERVENTION_COOLDOWN)
-        return (time.time() - self.last_intervention_time) > tolerance
-
-    def record_intervention(self):
-        """Record that the bot just spoke."""
-        self.last_intervention_time = time.time()
+    @property
+    def is_silenced(self) -> bool:
+        """Check if the bot has been asked to be quiet."""
+        return self.silence_requested_until > 0 and time.time() < self.silence_requested_until
 
     def add_transcript(self, speaker: str, text: str):
         """Add a transcript entry to the buffer."""
@@ -267,11 +194,7 @@ class MeetingState:
         return "\n\n".join(parts)
 
     def get_time_status(self, now: float | None = None) -> dict:
-        """Return a deterministic snapshot of meeting timing values.
-
-        `now` is accepted for deterministic tests; if omitted, current wall time
-        is used.
-        """
+        """Return a deterministic snapshot of meeting timing values."""
         current_time = time.time() if now is None else now
         current_time_iso = (
             datetime.fromtimestamp(current_time, tz=timezone.utc)
@@ -318,7 +241,7 @@ class MeetingState:
         }
 
     def get_context_for_prompt(self) -> dict:
-        """Get current state formatted for Mistral prompts."""
+        """Get current state formatted for system prompt."""
         item = self.current_item
         return {
             "agenda_json": json.dumps(
@@ -333,21 +256,10 @@ class MeetingState:
                 ],
                 indent=2,
             ),
-            "start_time": (
-                time.strftime("%H:%M", time.localtime(self.meeting_start_time))
-                if self.meeting_start_time
-                else "not started"
-            ),
-            "current_time": time.strftime("%H:%M"),
             "current_item": item.topic if item else "none",
+            "current_item_description": item.description if item else "",
             "allocated_minutes": item.duration_minutes if item else 0,
-            "elapsed_minutes": self.elapsed_minutes,
-            "total_meeting_minutes": self.total_meeting_minutes,
             "remaining_items": ", ".join(i.topic for i in self.remaining_items) or "none",
-            "meeting_overtime": self.meeting_overtime,
             "style": self.style,
-            "current_topic": item.topic if item else "",
-            "topic_description": item.description if item else "",
-            "recent_transcript": self.get_recent_transcript(),
             "meeting_memory": self.get_memory_context(),
         }

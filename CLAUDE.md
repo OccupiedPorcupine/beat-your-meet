@@ -10,11 +10,11 @@ Beat Your Meet is an AI meeting facilitator that joins LiveKit audio rooms, moni
 
 Three independent services that communicate via LiveKit and HTTP:
 
-- **`frontend/`** — Next.js 14 + TypeScript + Tailwind. Meeting setup UI (agenda generation, style selection) and in-meeting room UI. Connects to LiveKit for audio and receives agenda state updates via LiveKit data channels (topic: `"agenda"`).
+- **`frontend/`** — Next.js 14 + TypeScript + Tailwind. Meeting setup UI (agenda generation, style selection) and in-meeting room UI. Connects to LiveKit for audio and receives agenda state updates via LiveKit data channels (topic: `"agenda"`). Interpolates timers locally at 1s intervals between state updates.
 - **`server/`** — FastAPI Python backend. Handles LiveKit token generation (`/api/token`), Mistral-powered agenda generation (`/api/agenda`), and room creation (`/api/room`). Room metadata (agenda + style) is stored in LiveKit room metadata.
-- **`agent/`** — LiveKit Agents framework Python service. The core AI facilitator that joins rooms as a voice participant. Uses a `VoicePipelineAgent` with Silero VAD + Deepgram STT + Mistral LLM + ElevenLabs TTS. Runs a monitoring loop every 15s using Mistral Small for fast tangent detection via tool calling.
+- **`agent/`** — LiveKit Agents framework Python service. The core AI facilitator that joins rooms as a voice participant. Uses a `VoicePipelineAgent` with Silero VAD + Deepgram STT + Mistral LLM + ElevenLabs TTS. Time management uses event-driven asyncio timers (not polling). Tangent detection is handled by the main LLM naturally through its system prompt.
 
-Data flow: Frontend → Server (create room with agenda/style in metadata) → Agent (reads metadata on join, runs monitoring loop, sends agenda state back to frontend via data channel).
+Data flow: Frontend → Server (create room with agenda/style in metadata) → Agent (reads metadata on join, sets timers for agenda items, sends agenda state to frontend on transitions and via 60s heartbeat).
 
 ## Development Commands
 
@@ -46,9 +46,13 @@ Copy `.env.example` to `.env` and fill in all keys. The `.env` file lives at the
 
 ## Key Design Decisions
 
-- **Mistral Large** for agenda generation and the main facilitator LLM (via OpenAI-compatible API). **Mistral Small** for the fast 15-second monitoring loop tangent checks.
-- The agent uses Mistral's **tool calling** (`assess_conversation` tool) for structured tangent detection with confidence thresholds (only intervenes at >0.7 confidence).
-- Three facilitation styles (`gentle`, `moderate`, `aggressive`) control intervention tone and tangent tolerance (60s/30s/10s respectively).
-- `MeetingState` in `agent/monitor.py` is a state machine tracking `ItemState` transitions: UPCOMING → ACTIVE → WARNING (at 80% time) → OVERTIME → COMPLETED. Supports host override via EXTENDED state with a grace period.
+- **Mistral Large** for agenda generation and the main facilitator LLM (via OpenAI-compatible API). **Mistral Small** for item summaries and @beat chat responses only.
+- **Event-driven timers** (`AgendaTimers` in `agent/main.py`) replace the old polling loop. When an agenda item starts, asyncio timers fire at 80% (warning) and 100% (auto-advance). No polling, no wasted API calls.
+- **Tangent detection** is handled by the main LLM through its system prompt — every speech turn goes through `llm_node`, so the LLM naturally decides when to redirect. No separate monitoring LLM call.
+- **Override handling**: when a participant says "keep going", the overtime timer is cancelled and rescheduled with a 2-minute grace period. Simple timer management, no state machine.
+- Two facilitation styles (`gentle`, `moderate`) plus `chatting` mode (no facilitation). Styles control intervention tone via the system prompt.
+- `MeetingState` in `agent/monitor.py` tracks agenda items (UPCOMING → ACTIVE → WARNING → OVERTIME → COMPLETED), transcripts, meeting notes, and participant tracking.
+- `BeatFacilitatorAgent.llm_node` intercepts utterances for deterministic handling (time queries, skip, end meeting, doc requests, override) before falling through to the LLM.
 - Intervention cooldown of 30 seconds prevents the bot from being too chatty.
 - Transcript buffer keeps only the last 2 minutes of conversation.
+- Frontend state updates are sent on transitions (item change, warning, overtime) and via a 60s heartbeat for clock drift correction.
