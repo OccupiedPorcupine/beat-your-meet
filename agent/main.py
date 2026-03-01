@@ -459,13 +459,12 @@ class AgendaTimers:
             # Start timers for the new item
             self.start_item_timers()
         else:
-            # No more items — wrap up
+            # No more items — wait for explicit host-driven UI end signal.
             await self._session.say(
-                "That wraps up our agenda. Great meeting, everyone!",
+                "That wraps up our agenda. Host, please click End Meeting when you're ready.",
                 allow_interruptions=True,
             )
             self._state.record_intervention()
-            await _end_meeting(self._room, self._state, mistral_client=self._mistral_client)
 
         # Summarise the completed item
         if completed_item:
@@ -551,13 +550,9 @@ class BeatFacilitatorAgent(Agent):
                     yield f"Sure, skipping {current_topic}. That was the last agenda item — great meeting everyone!"
                 return
 
-        # End meeting
-        if _is_end_meeting_request(latest_user_text) and self._room:
-            logger.info("end_meeting_request detected")
-            if self._timers:
-                self._timers.stop()
-            _bg_task(_end_meeting(self._room, self._meeting_state), name="end_meeting_voice")
-            yield "Thanks everyone, it's been a great meeting! Take care and goodbye!"
+        # End meeting requests are UI-only (host presses End Meeting button).
+        if _is_end_meeting_request(latest_user_text):
+            yield "Please use the End Meeting button in the UI to end this meeting."
             return
 
         # Override ("keep going") — extend the overtime timer
@@ -709,6 +704,8 @@ async def entrypoint(ctx: JobContext):
                 "style": "moderate",
             }
 
+        expected_host_token = metadata.get("host_token")
+
         # Initialize meeting state
         meeting_state = MeetingState.from_metadata(metadata)
         logger.info(
@@ -801,7 +798,11 @@ async def entrypoint(ctx: JobContext):
 
                 # End meeting triggered from UI
                 elif msg.get("type") == "end_meeting":
-                    logger.info("end_meeting signal received from participant")
+                    provided_host_token = msg.get("host_token")
+                    if expected_host_token and provided_host_token != expected_host_token:
+                        logger.warning("Ignoring end_meeting with invalid host token")
+                        return
+                    logger.info("end_meeting signal received from host UI")
                     timers.stop()
                     _bg_task(
                         _end_meeting(ctx.room, meeting_state, mistral_client=mistral_chat_client),
@@ -949,11 +950,9 @@ async def _handle_chat_mention(
             await _reply("There are no active agenda items to skip.")
         return
 
-    # End meeting
+    # End meeting requests are UI-only (host presses End Meeting button).
     if _is_end_meeting_request(question):
-        logger.info("chat end_meeting request from %s", sender)
-        _bg_task(_end_meeting(room, state, mistral_client=client), name="end_meeting_chat")
-        await _reply("Thanks everyone, it's been a great meeting! Goodbye!")
+        await _reply("Please ask the host to use the End Meeting button in the UI.")
         return
 
     # Time query (deterministic)

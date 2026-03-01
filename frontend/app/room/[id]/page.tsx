@@ -383,20 +383,23 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
   }, [room]);
 
   const handleEndMeeting = useCallback(async () => {
-    const payload = new TextEncoder().encode(JSON.stringify({ type: "end_meeting" }));
+    if (!isHost || !hostToken) return;
+    const payload = new TextEncoder().encode(
+      JSON.stringify({ type: "end_meeting", host_token: hostToken })
+    );
     try {
       await room.localParticipant.publishData(payload, { reliable: true });
     } catch (err) {
       console.error("Failed to send end_meeting:", err);
     }
-  }, [room]);
+  }, [hostToken, isHost, room]);
 
   const handleLeave = useCallback(async () => {
     if (leaving) return;
     setLeaving(true);
-    await handleEndMeeting();
-    goToPostMeeting();
-  }, [handleEndMeeting, leaving, goToPostMeeting]);
+    room.disconnect();
+    router.push("/");
+  }, [leaving, room, router]);
 
   const togglePanel = useCallback((panel: "agenda" | "chat") => {
     setActiveSidePanel((prev) => (prev === panel ? null : panel));
@@ -516,6 +519,7 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
         onToggleChat={() => togglePanel("chat")}
         onEndMeeting={handleEndMeeting}
         onLeave={handleLeave}
+        canEndMeeting={isHost}
         leaving={leaving}
       />
 

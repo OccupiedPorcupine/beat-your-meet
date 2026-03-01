@@ -12,6 +12,7 @@ interface CustomControlBarProps {
   onToggleChat: () => void;
   onEndMeeting: () => void | Promise<void>;
   onLeave: () => void | Promise<void>;
+  canEndMeeting?: boolean;
   leaving?: boolean;
 }
 
@@ -21,6 +22,7 @@ export default function CustomControlBar({
   onToggleChat,
   onEndMeeting,
   onLeave,
+  canEndMeeting = false,
   leaving = false,
 }: CustomControlBarProps) {
   return (
@@ -50,17 +52,19 @@ export default function CustomControlBar({
         </svg>
       </button>
 
-      {/* End Meeting — generates docs then navigates to post-meeting via agent event */}
-      <button
-        onClick={() => void onEndMeeting()}
-        className="lk-button"
-        title="End Meeting"
-        style={{ color: "rgb(248 113 113)" }}
-      >
-        End Meeting
-      </button>
+      {/* End Meeting — host-only control */}
+      {canEndMeeting && (
+        <button
+          onClick={() => void onEndMeeting()}
+          className="lk-button"
+          title="End Meeting"
+          style={{ color: "rgb(248 113 113)" }}
+        >
+          End Meeting
+        </button>
+      )}
 
-      {/* Leave — signal end-of-meeting to agent (for doc gen), then navigate */}
+      {/* Leave room without ending the meeting */}
       <button
         type="button"
         className="lk-button lk-disconnect-button"
