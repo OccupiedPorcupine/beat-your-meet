@@ -21,13 +21,6 @@ export default function Home() {
             <br />
             --- Powered by Mistral Large 3, ElevenLabs, and LiveKit
             <br />
-            <br />
-            <br />
-            <br />
-            <br />
-            <br />
-            <br />
-            <br />
           </p>
 
           <Link href="/setup" className="hero-cta">
