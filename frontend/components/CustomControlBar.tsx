@@ -2,7 +2,6 @@
 
 import {
   TrackToggle,
-  DisconnectButton,
   StartAudio,
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
@@ -11,12 +10,18 @@ interface CustomControlBarProps {
   activeSidePanel: "agenda" | "chat" | null;
   onToggleAgenda: () => void;
   onToggleChat: () => void;
+  onEndMeeting: () => void | Promise<void>;
+  onLeave: () => void | Promise<void>;
+  leaving?: boolean;
 }
 
 export default function CustomControlBar({
   activeSidePanel,
   onToggleAgenda,
   onToggleChat,
+  onEndMeeting,
+  onLeave,
+  leaving = false,
 }: CustomControlBarProps) {
   return (
     <div className="custom-control-bar">
@@ -45,12 +50,25 @@ export default function CustomControlBar({
         </svg>
       </button>
 
-      <DisconnectButton
-        className="lk-button lk-disconnect-button"
-        onClick={() => { window.location.href = "/"; }}
+      {/* End Meeting — generates docs then navigates to post-meeting via agent event */}
+      <button
+        onClick={() => void onEndMeeting()}
+        className="lk-button"
+        title="End Meeting"
+        style={{ color: "rgb(248 113 113)" }}
       >
-        Leave
-      </DisconnectButton>
+        End Meeting
+      </button>
+
+      {/* Leave — signal end-of-meeting to agent (for doc gen), then navigate */}
+      <button
+        type="button"
+        className="lk-button lk-disconnect-button"
+        onClick={() => void onLeave()}
+        disabled={leaving}
+      >
+        {leaving ? "Ending..." : "Leave"}
+      </button>
 
       <StartAudio label="Allow Audio" />
     </div>

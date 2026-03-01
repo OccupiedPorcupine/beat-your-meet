@@ -42,6 +42,12 @@ export default function PostMeetingPageInner() {
   useEffect(() => {
     let cancelled = false;
     let intervalId: ReturnType<typeof setInterval> | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const stopPolling = () => {
+      if (intervalId) { clearInterval(intervalId); intervalId = null; }
+      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+    };
 
     const fetchDocs = async (silent = false) => {
       if (!silent) setLoadingList(true);
@@ -57,10 +63,7 @@ export default function PostMeetingPageInner() {
         setDocs(data);
         setListError(null);
         setLoadingList(false);
-        if (data.length > 0 && intervalId) {
-          clearInterval(intervalId);
-          intervalId = null;
-        }
+        if (data.length > 0) stopPolling();
       } catch (err) {
         if (cancelled) return;
         setLoadingList(false);
@@ -75,9 +78,20 @@ export default function PostMeetingPageInner() {
     fetchDocs();
     intervalId = setInterval(() => fetchDocs(true), 3000);
 
+    // Stop polling after 60s and surface a clear message if still empty
+    timeoutId = setTimeout(() => {
+      if (cancelled) return;
+      stopPolling();
+      setLoadingList(false);
+      setListError(
+        "Documents are taking longer than expected. " +
+        "The agent may still be processing — try refreshing in a moment."
+      );
+    }, 60_000);
+
     return () => {
       cancelled = true;
-      if (intervalId) clearInterval(intervalId);
+      stopPolling();
     };
   }, [roomId]);
 
