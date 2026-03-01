@@ -258,8 +258,17 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
   const [agendaState, setAgendaState] = useState<AgendaState | null>(null);
   const [activeSidePanel, setActiveSidePanel] = useState<"agenda" | "chat" | null>("agenda");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [activeStyle, setActiveStyle] = useState<FacilitatorStyle>("moderate");
+  const [activeStyle, setActiveStyle] = useState<BeatStyle>("moderate");
   const [leaving, setLeaving] = useState(false);
+  const [botStatus, setBotStatus] = useState<BotStatus>("absent");
+  const [botError, setBotError] = useState<string | null>(null);
+
+  // Host token is stored in sessionStorage during room creation
+  const [hostToken] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return sessionStorage.getItem(`host_token_${roomName}`);
+  });
+  const isHost = !!hostToken;
 
   const goToPostMeeting = useCallback(() => {
     if (redirectingRef.current) return;
@@ -267,6 +276,17 @@ function MeetingRoom({ roomName, accessCode }: { roomName: string; accessCode: s
     const encoded = encodeURIComponent(accessCode);
     router.push(`/post-meeting/${roomName}?code=${encoded}`);
   }, [accessCode, roomName, router]);
+
+  // Track bot presence via participants list
+  const participants = useParticipants();
+  useEffect(() => {
+    const botPresent = participants.some((p) => isBot(p));
+    if (botPresent && (botStatus === "joining" || botStatus === "absent")) {
+      setBotStatus("active");
+    } else if (!botPresent && botStatus === "active") {
+      setBotStatus("absent");
+    }
+  }, [participants, botStatus]);
 
   // Keep style button in sync with agent-reported style
   useEffect(() => {
